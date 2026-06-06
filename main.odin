@@ -62,6 +62,7 @@ main :: proc() {
     }
 
     focus: bool
+    draw_bar := true
     first_visible_row: int
     n_cols: int
     quit := false
@@ -84,6 +85,8 @@ main :: proc() {
                     selected = max(0, selected-1)
                 case sdl.K_RETURN:
                     focus = !focus
+                case sdl.K_B:
+                    draw_bar = !draw_bar
                 }
             case .QUIT:
                 quit = true
@@ -131,7 +134,7 @@ main :: proc() {
             // grid_h := f32(n_visible_rows * (thumb + gap)-2*gap)
             x_offset := (f32(ww) - grid_w) / 2
             // y_offset := (f32(wh) - grid_h) / 2
-            y_offset := f32(50)
+            y_offset: f32 = 50
 
             // determine scroll offset
             selected_row := selected / n_cols
@@ -179,52 +182,54 @@ main :: proc() {
         }
 
         // setup text
-        filename := os.args[selected+1]
-        cfilename := strings.unsafe_string_to_cstring(filename)
+        if draw_bar {
+            filename := os.args[selected+1]
+            cfilename := strings.unsafe_string_to_cstring(filename)
 
-        surface := sdl_ttf.RenderText_Blended(font, cfilename, len(filename), sdl.Color{255, 255, 255, 255})
-        text_left := sdl.CreateTextureFromSurface(renderer, surface)
-        sdl.DestroySurface(surface)
-        defer sdl.DestroyTexture(text_left)
+            surface := sdl_ttf.RenderText_Blended(font, cfilename, len(filename), sdl.Color{255, 255, 255, 255})
+            text_left := sdl.CreateTextureFromSurface(renderer, surface)
+            sdl.DestroySurface(surface)
+            defer sdl.DestroyTexture(text_left)
 
-        strings.builder_reset(&builder)
-        strings.write_int(&builder, selected+1)
-        strings.write_byte(&builder, '/')
-        strings.write_int(&builder, len(textures))
-        counter := strings.to_string(builder)
-        ccounter := strings.unsafe_string_to_cstring(counter)
-        surface = sdl_ttf.RenderText_Blended(font, ccounter, len(counter), sdl.Color{255, 255, 255, 255})
-        text_right := sdl.CreateTextureFromSurface(renderer, surface)
-        sdl.DestroySurface(surface)
-        defer sdl.DestroyTexture(text_right)
+            strings.builder_reset(&builder)
+            strings.write_int(&builder, selected+1)
+            strings.write_byte(&builder, '/')
+            strings.write_int(&builder, len(textures))
+            counter := strings.to_string(builder)
+            ccounter := strings.unsafe_string_to_cstring(counter)
+            surface = sdl_ttf.RenderText_Blended(font, ccounter, len(counter), sdl.Color{255, 255, 255, 255})
+            text_right := sdl.CreateTextureFromSurface(renderer, surface)
+            sdl.DestroySurface(surface)
+            defer sdl.DestroyTexture(text_right)
 
-        tw, th: f32
-        sdl.GetTextureSize(text_left, &tw, &th)
+            tw, th: f32
+            sdl.GetTextureSize(text_left, &tw, &th)
 
-        // draw bar
-        sdl.SetRenderDrawColor(renderer, 0, 0, 0, 255)
-        bar_h := th
-        bar_rect := sdl.FRect {
-            x = 0,
-            w = f32(ww),
-            h = f32(bar_h),
-            y = f32(wh) - f32(bar_h),
+            // draw bar
+            sdl.SetRenderDrawColor(renderer, 0, 0, 0, 255)
+            bar_h := th
+            bar_rect := sdl.FRect {
+                x = 0,
+                w = f32(ww),
+                h = f32(bar_h),
+                y = f32(wh) - f32(bar_h),
+            }
+            sdl.RenderFillRect(renderer, &bar_rect)
+
+            // draw text
+            dst := bar_rect
+            dst.x += 10 // padding
+            dst.w = tw
+            dst.h = th
+            sdl.RenderTexture(renderer, text_left, nil, &dst)
+
+            sdl.GetTextureSize(text_right, &tw, &th)
+            dst.y = bar_rect.y
+            dst.x = f32(ww)-tw-10
+            dst.h = th
+            dst.w = tw
+            sdl.RenderTexture(renderer, text_right, nil, &dst)
         }
-        sdl.RenderFillRect(renderer, &bar_rect)
-
-        // draw text
-        dst := bar_rect
-        dst.x += 10 // padding
-        dst.w = tw
-        dst.h = th
-        sdl.RenderTexture(renderer, text_left, nil, &dst)
-
-        sdl.GetTextureSize(text_right, &tw, &th)
-        dst.y = bar_rect.y
-        dst.x = f32(ww)-tw-10
-        dst.h = th
-        dst.w = tw
-        sdl.RenderTexture(renderer, text_right, nil, &dst)
 
         sdl.RenderPresent(renderer)
     }
