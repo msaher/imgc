@@ -97,6 +97,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         sdl.DestroyTexture(texture)
     }
 
+    thumb: f32 = 120
     focus: bool
     draw_bar := true
     first_visible_row: int
@@ -123,6 +124,10 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                     focus = !focus
                 case sdl.K_B:
                     draw_bar = !draw_bar
+                case sdl.K_EQUALS:
+                    thumb = min(thumb+10, 500)
+                case sdl.K_MINUS:
+                    thumb = max(thumb-10, 10)
                 }
             case .QUIT:
                 quit = true
@@ -156,17 +161,16 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
             // (400x200) --> (200x100), scale = 0.5
             // (800x600) --> (200x150), scale = 0.25
             // max(tw*th)*scale = thumbnail = 200
-            thumb :: 120
-            gap :: 20
+            gap: f32 : 20
 
-            n_cols = int(ww/(thumb+gap))
-            n_visible_rows := int(wh/(thumb+gap))
+            n_cols = int(f32(ww)/(thumb+gap))
+            n_visible_rows := int(f32(wh)/(thumb+gap))
             if n_cols < 1 {
                 n_cols = 1
             }
 
             // center grid
-            grid_w := f32(n_cols * (thumb + gap) - gap)
+            grid_w := f32(n_cols) * (thumb + gap) - gap
             // grid_h := f32(n_visible_rows * (thumb + gap)-2*gap)
             x_offset := (f32(ww) - grid_w) / 2
             // y_offset := (f32(wh) - grid_h) / 2
@@ -195,8 +199,8 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                 dst.w = tw*scale
                 dst.h = th*scale
 
-                dst.x = x_offset + f32(col)*(thumb+gap) + (thumb - dst.w)/2
-                dst.y = y_offset + f32(row)*(thumb+gap) + (thumb - dst.h)/2 - f32(first_visible_row)*(thumb+gap)
+                dst.x = x_offset + f32(col)*f32(thumb+gap) + (thumb - dst.w)/2
+                dst.y = y_offset + f32(row)*f32(thumb+gap) + (thumb - dst.h)/2 - f32(first_visible_row)*(thumb+gap)
 
                 // draw a box
                 if i == selected {
