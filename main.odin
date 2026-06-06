@@ -80,12 +80,12 @@ main :: proc() {
         sdl.SetRenderDrawColor(renderer, 20, 20, 20, 255)
         sdl.RenderClear(renderer)
 
+        // suppose thumb :: 200
         // (400x200) --> (200x100), scale = 0.5
         // (800x600) --> (200x150), scale = 0.25
         // max(tw*th)*scale = thumbnail = 200
-        thumb :: 200
+        thumb :: 150
         gap :: 20
-        padding :: 20
 
         ww, wh: c.int
         sdl.GetWindowSize(window, &ww, &wh)
@@ -94,6 +94,12 @@ main :: proc() {
         if n_cols < 1 {
             n_cols = 1
         }
+
+        // center grid
+        grid_w := f32(n_cols * (thumb + gap) - gap)
+        grid_h := f32(n_visible_rows * (thumb + gap) - gap)
+        x_offset := (f32(ww) - grid_w) / 2
+        y_offset := (f32(wh) - grid_h) / 2
 
         // determine scroll offset
         selected_row := selected / n_cols
@@ -118,8 +124,8 @@ main :: proc() {
             dst.w = tw*scale
             dst.h = th*scale
 
-            dst.x = f32(col)*(thumb+gap) + (thumb - dst.w)/2 + padding
-            dst.y = f32(row)*(thumb+gap) + (thumb - dst.h)/2 - f32(first_visible_row)*(thumb+gap)
+            dst.x = x_offset + f32(col)*(thumb+gap) + (thumb - dst.w)/2
+            dst.y = y_offset + f32(row)*(thumb+gap) + (thumb - dst.h)/2 - f32(first_visible_row)*(thumb+gap)
 
             // draw a box
             if i == selected {
@@ -137,7 +143,6 @@ main :: proc() {
             }
 
             sdl.RenderTexture(renderer, t, nil, &dst)
-
         }
 
         sdl.RenderPresent(renderer)
