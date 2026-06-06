@@ -4,55 +4,65 @@ import "core:c"
 import "core:os"
 import "core:fmt"
 import "core:strings"
+import "base:runtime"
 import sdl "vendor:sdl3"
 import sdl_img "vendor:sdl3/image"
 import sdl_ttf "vendor:sdl3/ttf"
 
-main :: proc() {
+run :: proc() -> (sdl_ok: bool, err: os.Error) {
     if len(os.args) < 2 {
         fmt.fprintln(os.stderr, "imgc: wrong number of arguments")
-        os.exit(1)
+        return
     }
 
-    assert(sdl.Init({.VIDEO}), string(sdl.GetError()))
+    if !sdl.Init({.VIDEO}) {
+        return false, nil
+    }
     defer sdl.Quit()
 
     window: ^sdl.Window
     renderer: ^sdl.Renderer
     ok := sdl.CreateWindowAndRenderer("hello", 800, 600, {.RESIZABLE}, &window, &renderer)
-    assert(ok, string(sdl.GetError()))
+    if !ok {
+        return false, nil
+    }
     defer sdl.DestroyWindow(window);
     defer sdl.DestroyRenderer(renderer);
-    sdl.SetRenderVSync(renderer, 1)
 
-    assert(sdl_ttf.Init(), string(sdl.GetError()))
+    if !sdl.SetRenderVSync(renderer, 1) {
+        return false, nil
+    }
+
+    if !sdl_ttf.Init() {
+        return false, nil
+    }
     defer sdl_ttf.Quit()
 
     font := sdl_ttf.OpenFont("/usr/share/fonts/TTF/DejaVuSans.ttf", 16)
-    assert(font != nil, string(sdl.GetError()))
+    if font == nil {
+        return false, nil
+    }
     defer sdl_ttf.CloseFont(font)
 
-
+    sdl_ok = true
     builder: strings.Builder
-    strings.builder_init(&builder)
+    strings.builder_init(&builder) or_return
     defer strings.builder_destroy(&builder)
 
     selected: int
     textures: [dynamic]^sdl.Texture
     for arg in os.args[1:] {
-        img, err := strings.clone_to_cstring(arg)
-        assert(err == nil)
-        surface := sdl_img.Load(img)
-        delete(img)
+        carg := strings.clone_to_cstring(arg) or_return
+        defer delete(carg)
+
+        surface := sdl_img.Load(carg)
         if surface == nil {
-            fmt.fprintf(os.stderr, "%s: %s \n", arg, sdl.GetError())
-            return
+            return false, nil
         }
         defer sdl.DestroySurface(surface)
         texture := sdl.CreateTextureFromSurface(renderer, surface)
         if texture == nil {
-            fmt.fprintf(os.stderr, "%s\n", sdl.GetError())
-            return
+            return false, nil
         }
         append(&textures, texture)
     }
@@ -232,5 +242,15 @@ main :: proc() {
         }
 
         sdl.RenderPresent(renderer)
+    }
+
+    return true, nil
+}
+
+main :: proc() {
+    sdl_ok, err := run()
+    if !sdl_ok {
+        fmt.fprintln(os.stderr, string(sdl.GetError()))
+        os.exit(1)
     }
 }
