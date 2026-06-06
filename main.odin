@@ -106,14 +106,18 @@ main :: proc() {
 
         dst: sdl.FRect
         for t, i in textures {
+            row := i / n_cols
+            if row < first_visible_row || row > last_visible_row {
+                continue
+            }
+            col := i % n_cols
+
             tw, th: f32
             sdl.GetTextureSize(t, &tw, &th)
             scale := min(f32(thumb) / tw, f32(thumb) / th)
             dst.w = tw*scale
             dst.h = th*scale
 
-            row := i / n_cols
-            col := i % n_cols
             dst.x = f32(col)*(thumb+gap) + (thumb - dst.w)/2 + padding
             dst.y = f32(row)*(thumb+gap) + (thumb - dst.h)/2 - f32(first_visible_row)*(thumb+gap)
 
