@@ -6,6 +6,7 @@ import "core:fmt"
 import "core:strings"
 import sdl "vendor:sdl3"
 import sdl_img "vendor:sdl3/image"
+import sdl_ttf "vendor:sdl3/ttf"
 
 main :: proc() {
     if len(os.args) < 2 {
@@ -13,17 +14,23 @@ main :: proc() {
         os.exit(1)
     }
 
-    ok := sdl.Init({.VIDEO})
-    assert(ok)
+    assert(sdl.Init({.VIDEO}), string(sdl.GetError()))
     defer sdl.Quit()
 
     window: ^sdl.Window
     renderer: ^sdl.Renderer
-    ok = sdl.CreateWindowAndRenderer("hello", 800, 600, {.RESIZABLE}, &window, &renderer)
-    assert(ok)
+    ok := sdl.CreateWindowAndRenderer("hello", 800, 600, {.RESIZABLE}, &window, &renderer)
+    assert(ok, string(sdl.GetError()))
     defer sdl.DestroyWindow(window);
     defer sdl.DestroyRenderer(renderer);
     sdl.SetRenderVSync(renderer, 1)
+
+    assert(sdl_ttf.Init(), string(sdl.GetError()))
+    defer sdl_ttf.Quit()
+
+    font := sdl_ttf.OpenFont("/usr/share/fonts/TTF/DejaVuSans.ttf", 16)
+    assert(font != nil, string(sdl.GetError()))
+    defer sdl_ttf.CloseFont(font)
 
 
     selected: int
@@ -102,12 +109,11 @@ main :: proc() {
             }
             sdl.RenderTexture(renderer, t, nil, &dst)
         } else {
-
             // suppose thumb :: 200
             // (400x200) --> (200x100), scale = 0.5
             // (800x600) --> (200x150), scale = 0.25
             // max(tw*th)*scale = thumbnail = 200
-            thumb :: 150
+            thumb :: 120
             gap :: 20
 
             n_cols = int(ww/(thumb+gap))
@@ -118,9 +124,10 @@ main :: proc() {
 
             // center grid
             grid_w := f32(n_cols * (thumb + gap) - gap)
-            grid_h := f32(n_visible_rows * (thumb + gap) - gap)
+            // grid_h := f32(n_visible_rows * (thumb + gap)-2*gap)
             x_offset := (f32(ww) - grid_w) / 2
-            y_offset := (f32(wh) - grid_h) / 2
+            // y_offset := (f32(wh) - grid_h) / 2
+            y_offset := f32(50)
 
             // determine scroll offset
             selected_row := selected / n_cols
@@ -166,6 +173,51 @@ main :: proc() {
                 sdl.RenderTexture(renderer, t, nil, &dst)
             }
         }
+
+        // setup text
+        filename := os.args[selected+1]
+        cfilename := strings.unsafe_string_to_cstring(filename)
+
+        surface := sdl_ttf.RenderText_Blended(font, cfilename, len(filename), sdl.Color{255, 255, 255, 255})
+        text_left := sdl.CreateTextureFromSurface(renderer, surface)
+        sdl.DestroySurface(surface)
+        defer sdl.DestroyTexture(text_left)
+
+        counter := fmt.aprintf("%d/%d", selected+1, len(textures))
+        defer delete(counter)
+        ccounter := strings.unsafe_string_to_cstring(counter)
+        surface = sdl_ttf.RenderText_Blended(font, ccounter, len(counter), sdl.Color{255, 255, 255, 255})
+        text_right := sdl.CreateTextureFromSurface(renderer, surface)
+        sdl.DestroySurface(surface)
+        defer sdl.DestroyTexture(text_right)
+
+        tw, th: f32
+        sdl.GetTextureSize(text_left, &tw, &th)
+
+        // draw bar
+        sdl.SetRenderDrawColor(renderer, 0, 0, 0, 255)
+        bar_h := th
+        bar_rect := sdl.FRect {
+            x = 0,
+            w = f32(ww),
+            h = f32(bar_h),
+            y = f32(wh) - f32(bar_h),
+        }
+        sdl.RenderFillRect(renderer, &bar_rect)
+
+        // draw text
+        dst := bar_rect
+        dst.x += 10 // padding
+        dst.w = tw
+        dst.h = th
+        sdl.RenderTexture(renderer, text_left, nil, &dst)
+
+        sdl.GetTextureSize(text_right, &tw, &th)
+        dst.y = bar_rect.y
+        dst.x = f32(ww)-tw-10
+        dst.h = th
+        dst.w = tw
+        sdl.RenderTexture(renderer, text_right, nil, &dst)
 
         sdl.RenderPresent(renderer)
     }
