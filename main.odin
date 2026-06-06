@@ -33,6 +33,10 @@ main :: proc() {
     defer sdl_ttf.CloseFont(font)
 
 
+    builder: strings.Builder
+    strings.builder_init(&builder)
+    defer strings.builder_destroy(&builder)
+
     selected: int
     textures: [dynamic]^sdl.Texture
     for arg in os.args[1:] {
@@ -183,8 +187,11 @@ main :: proc() {
         sdl.DestroySurface(surface)
         defer sdl.DestroyTexture(text_left)
 
-        counter := fmt.aprintf("%d/%d", selected+1, len(textures))
-        defer delete(counter)
+        strings.builder_reset(&builder)
+        strings.write_int(&builder, selected+1)
+        strings.write_byte(&builder, '/')
+        strings.write_int(&builder, len(textures))
+        counter := strings.to_string(builder)
         ccounter := strings.unsafe_string_to_cstring(counter)
         surface = sdl_ttf.RenderText_Blended(font, ccounter, len(counter), sdl.Color{255, 255, 255, 255})
         text_right := sdl.CreateTextureFromSurface(renderer, surface)
