@@ -23,15 +23,35 @@ main :: proc() {
     assert(ok)
     defer sdl.DestroyWindow(window);
     defer sdl.DestroyRenderer(renderer);
+    sdl.SetRenderVSync(renderer, 1)
 
 
-    img, err := strings.clone_to_cstring(os.args[1])
-    assert(err == nil)
-    surface := sdl_img.Load(img)
-    defer sdl.DestroySurface(surface)
-    texture := sdl.CreateTextureFromSurface(renderer, surface)
-    defer sdl.DestroyTexture(texture)
+    selected: int
+    textures: [dynamic]^sdl.Texture
+    for arg in os.args[1:] {
+        img, err := strings.clone_to_cstring(arg)
+        assert(err == nil)
+        surface := sdl_img.Load(img)
+        delete(img)
+        if surface == nil {
+            fmt.fprintf(os.stderr, "%s: %s \n", arg, sdl.GetError())
+            return
+        }
+        defer sdl.DestroySurface(surface)
+        texture := sdl.CreateTextureFromSurface(renderer, surface)
+        if texture == nil {
+            fmt.fprintf(os.stderr, "%s\n", sdl.GetError())
+            return
+        }
+        append(&textures, texture)
+    }
 
+    defer for texture in textures {
+        sdl.DestroyTexture(texture)
+    }
+
+    first_visible_row: int
+    n_cols: int
     quit := false
     for !quit {
         ev: sdl.Event
@@ -39,8 +59,17 @@ main :: proc() {
         for sdl.PollEvent(&ev) {
             #partial switch ev.type {
             case .KEY_DOWN:
-                if ev.key.key == sdl.K_Q {
+                switch ev.key.key {
+                case sdl.K_Q:
                     quit = true
+                case sdl.K_J:
+                    selected = min(len(textures)-1, selected+n_cols)
+                case sdl.K_K:
+                    selected = max(0, selected-n_cols)
+                case sdl.K_L:
+                    selected = min(len(textures)-1, selected+1)
+                case sdl.K_H:
+                    selected = max(0, selected-1)
                 }
             case .QUIT:
                 quit = true
@@ -51,34 +80,61 @@ main :: proc() {
         sdl.SetRenderDrawColor(renderer, 20, 20, 20, 255)
         sdl.RenderClear(renderer)
 
-        // center image within window
-        dst: sdl.FRect
+        // (400x200) --> (200x100), scale = 0.5
+        // (800x600) --> (200x150), scale = 0.25
+        // max(tw*th)*scale = thumbnail = 200
+        thumb :: 200
+        gap :: 20
+        padding :: 20
+
         ww, wh: c.int
-        tw, th: f32
         sdl.GetWindowSize(window, &ww, &wh)
-        sdl.GetTextureSize(texture, &tw, &th)
-        if false {
-            dst = sdl.FRect{
-                w = tw,
-                h = th,
-                x = f32(ww)/2-tw/2,
-                y = f32(wh)/2-th/2,
-            }
-        } else {
-            thumb :: 200
-            // (400x200) --> (200x100), scale = 0.5
-            // (800x600) --> (200x150), scale = 0.25
-            // max(tw*th)*scale = thumbnail = 200
-            scale := thumb/max(tw, th)
-            dst = sdl.FRect {
-                w = tw*scale,
-                h = th*scale,
-                x = 0,
-                y = 0,
-            }
+        n_cols = int(ww/(thumb+gap))
+        n_visible_rows := int(wh/(thumb+gap))
+        if n_cols < 1 {
+            n_cols = 1
         }
 
-        sdl.RenderTexture(renderer, texture, nil, &dst)
+        // determine scroll offset
+        selected_row := selected / n_cols
+        last_visible_row := first_visible_row + n_visible_rows - 1
+        if selected_row > last_visible_row {
+            first_visible_row += 1
+        } else if selected_row < first_visible_row {
+            first_visible_row -= 1
+        }
+
+        dst: sdl.FRect
+        for t, i in textures {
+            tw, th: f32
+            sdl.GetTextureSize(t, &tw, &th)
+            scale := min(f32(thumb) / tw, f32(thumb) / th)
+            dst.w = tw*scale
+            dst.h = th*scale
+
+            row := i / n_cols
+            col := i % n_cols
+            dst.x = f32(col)*(thumb+gap) + (thumb - dst.w)/2 + padding
+            dst.y = f32(row)*(thumb+gap) + (thumb - dst.h)/2 - f32(first_visible_row)*(thumb+gap)
+
+            // draw a box
+            if i == selected {
+                sdl.SetRenderDrawColor(renderer, 80, 160, 255, 255)
+                thickness :: 3
+                for i in 0..<thickness {
+                    r := sdl.FRect{
+                        x = dst.x - f32(i),
+                        y = dst.y - f32(i),
+                        w = dst.w + f32(i)*2,
+                        h = dst.h + f32(i)*2,
+                    }
+                    sdl.RenderRect(renderer, &r)
+                }
+            }
+
+            sdl.RenderTexture(renderer, t, nil, &dst)
+
+        }
 
         sdl.RenderPresent(renderer)
     }
