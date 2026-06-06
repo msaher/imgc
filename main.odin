@@ -15,6 +15,29 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         return
     }
 
+    // collect files. walk dirs
+    sdl_ok = true
+    file_args: [dynamic]string
+    for arg in os.args[1:] {
+        info, err := os.stat(arg, context.temp_allocator)
+        if err == .Not_Exist {
+            fmt.printf("%s: No such file or directory\n", arg)
+            continue
+        }
+        if info.type == .Directory {
+            dir := os.open(info.fullpath) or_return
+            infos := os.read_dir(dir, 0, context.allocator) or_return
+            for fi in infos {
+                // no recursion
+                if fi.type != .Directory {
+                    append(&file_args, fi.fullpath) or_return
+                }
+            }
+        } else {
+            append(&file_args, info.fullpath) or_return
+        }
+    }
+
     if !sdl.Init({.VIDEO}) {
         return false, nil
     }
@@ -51,20 +74,23 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
 
     selected: int
     textures: [dynamic]^sdl.Texture
-    for arg in os.args[1:] {
-        carg := strings.clone_to_cstring(arg) or_return
-        defer delete(carg)
+    paths: [dynamic]string
+    for path in file_args {
+        cpath := strings.clone_to_cstring(path) or_return
+        defer delete(cpath)
 
-        surface := sdl_img.Load(carg)
+        surface := sdl_img.Load(cpath)
         if surface == nil {
-            return false, nil
+            fmt.printf("%s: %s\n", path, sdl.GetError())
+            continue
         }
         defer sdl.DestroySurface(surface)
         texture := sdl.CreateTextureFromSurface(renderer, surface)
         if texture == nil {
             return false, nil
         }
-        append(&textures, texture)
+        append(&textures, texture) or_return
+        append(&paths, path) or_return
     }
 
     defer for texture in textures {
@@ -193,7 +219,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
 
         // setup text
         if draw_bar {
-            filename := os.args[selected+1]
+            filename := paths[selected]
             cfilename := strings.unsafe_string_to_cstring(filename)
 
             surface := sdl_ttf.RenderText_Blended(font, cfilename, len(filename), sdl.Color{255, 255, 255, 255})
