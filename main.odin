@@ -172,9 +172,11 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
             // center grid
             grid_w := f32(n_cols) * (thumb + gap) - gap
             // grid_h := f32(n_visible_rows * (thumb + gap)-2*gap)
+            total_rows := (len(textures) + n_cols - 1) / n_cols
+            grid_h := f32(total_rows) * (thumb + gap) - gap
             x_offset := (f32(ww) - grid_w) / 2
-            // y_offset := (f32(wh) - grid_h) / 2
-            y_offset: f32 = 50
+            y_offset := (f32(wh) - grid_h) / 2
+            if y_offset < 0 { y_offset = 50 } // don't go negative when grid is taller than window
 
             // determine scroll offset
             selected_row := selected / n_cols
