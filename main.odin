@@ -97,6 +97,9 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         sdl.DestroyTexture(texture)
     }
 
+    zoom_levels := []f32{0.12, 0.25, 0.50, 0.75, 1.00, 1.50, 2.00, 4.00, 8.00}
+    zoom_idx := 4
+
     thumb: f32 = 120
     focus: bool
     draw_bar := true
@@ -125,9 +128,17 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                 case sdl.K_B:
                     draw_bar = !draw_bar
                 case sdl.K_EQUALS:
-                    thumb = min(thumb+10, 500)
+                    if focus {
+                        zoom_idx = min(zoom_idx+1, len(zoom_levels)-1)
+                    } else {
+                        thumb = min(thumb+10, 500)
+                    }
                 case sdl.K_MINUS:
-                    thumb = max(thumb-10, 10)
+                    if focus {
+                        zoom_idx = max(zoom_idx-1, 0)
+                    } else {
+                        thumb = max(thumb-10, 10)
+                    }
                 }
             case .QUIT:
                 quit = true
@@ -149,9 +160,10 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
             if scale > 1 {
                 scale = 1
             }
+            scale *= zoom_levels[zoom_idx]
             dst := sdl.FRect {
-                w = scale*tw,
                 h = scale*th,
+                w = scale*tw,
                 x = f32(ww)/2 - (tw*scale)/2,
                 y = f32(wh)/2 - (th*scale)/2,
             }
@@ -234,6 +246,10 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
             defer sdl.DestroyTexture(text_left)
 
             strings.builder_reset(&builder)
+            if focus {
+                strings.write_int(&builder, int(zoom_levels[zoom_idx]*100))
+                strings.write_string(&builder, "% ")
+            }
             strings.write_int(&builder, selected+1)
             strings.write_byte(&builder, '/')
             strings.write_int(&builder, len(textures))
