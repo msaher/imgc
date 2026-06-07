@@ -85,16 +85,17 @@ draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, fc: ^Focus_Stat
 }
 
 draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_State) {
-    ww, wh: c.int
-    sdl.GetWindowSize(window, &ww, &wh)
     // suppose thumb :: 200
     // (400x200) --> (200x100), scale = 0.5
     // (800x600) --> (200x150), scale = 0.25
     // max(tw*th)*scale = thumbnail = 200
+    ww, wh: c.int
+    sdl.GetWindowSize(window, &ww, &wh)
     gap: f32 : 20
 
-    grid.n_cols = int(f32(ww)/(grid.thumb+gap))
-    n_visible_rows := int(f32(wh)/(grid.thumb+gap))
+    stride := grid.thumb+gap
+    grid.n_cols = int(f32(ww)/(stride))
+    n_visible_rows := int(f32(wh)/(stride))
     if grid.n_cols < 1 {
         grid.n_cols = 1
     }
@@ -131,8 +132,8 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
         dst.w = tw*scale
         dst.h = th*scale
 
-        dst.x = x_offset + f32(col)*f32(grid.thumb+gap) + (grid.thumb - dst.w)/2
-        dst.y = y_offset + f32(row)*f32(grid.thumb+gap) + (grid.thumb - dst.h)/2 - f32(grid.first_visible_row)*(grid.thumb+gap)
+        dst.x = x_offset + f32(col)*f32(stride) + (grid.thumb - dst.w)/2
+        dst.y = y_offset + f32(row)*f32(stride) + (grid.thumb - dst.h)/2 - f32(grid.first_visible_row)*(stride)
 
         // draw a box
         if i == grid.selected {
