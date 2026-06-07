@@ -9,7 +9,17 @@ import sdl "vendor:sdl3"
 import sdl_img "vendor:sdl3/image"
 import sdl_ttf "vendor:sdl3/ttf"
 
-draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, t: ^sdl.Texture, zoom: f32, panned_x, panned_y: ^f32) {
+Focus_State :: struct {
+    panned_x: f32,
+    panned_y: f32,
+
+    zoom_idx: int
+}
+
+ZOOM_LEVELS := []f32{0.12, 0.25, 0.50, 0.75, 1.00, 1.50, 2.00, 4.00, 8.00}
+DEFAULT_ZOOM_LEVEL :: 4
+
+draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, fc: ^Focus_State, t: ^sdl.Texture) {
     ww, wh: c.int
     sdl.GetWindowSize(window, &ww, &wh)
 
@@ -19,6 +29,7 @@ draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, t: ^sdl.Texture
     if scale > 1 {
         scale = 1
     }
+    zoom := ZOOM_LEVELS[fc.zoom_idx]
     scale *= zoom
     dst := sdl.FRect {
         h = scale*th,
@@ -36,26 +47,26 @@ draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, t: ^sdl.Texture
 
         // So dst.y+panned_y in range [f32(wh)-dst.h, 0]
         // panned_y in range [f32(wh)-dst.h-dst.y, 0-dst.y]
-        panned_y^ = clamp(
-            panned_y^,
+        fc.panned_y = clamp(
+            fc.panned_y,
             f32(wh) - dst.h - dst.y,
             -dst.y,
         )
-        dst.y += panned_y^
+        dst.y += fc.panned_y
     } else {
         // no panning when image is fully visible
-        panned_y^ = 0
+        fc.panned_y = 0
     }
 
     if dst.w > f32(ww) {
-        panned_x^ = clamp(
-            panned_x^,
+        fc.panned_x = clamp(
+            fc.panned_x,
             f32(ww) - dst.w - dst.x,
             -dst.x,
         )
-        dst.x += panned_x^
+        dst.x += fc.panned_x
     } else {
-        panned_x^ = 0
+        fc.panned_x = 0
     }
 
     sdl.RenderTexture(renderer, t, nil, &dst)
@@ -219,14 +230,13 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         sdl.DestroyTexture(texture)
     }
 
-    zoom_levels := []f32{0.12, 0.25, 0.50, 0.75, 1.00, 1.50, 2.00, 4.00, 8.00}
-    zoom_idx := 4
     PAN_SPEED :: 100
-    panned_x: f32
-    panned_y: f32
+    focus_state := Focus_State{
+        zoom_idx = DEFAULT_ZOOM_LEVEL
+    }
 
     thumb: f32 = 120
-    focus: bool
+    focus_mode: bool
     draw_bar := true
     first_visible_row: int
     n_cols: int
@@ -241,43 +251,43 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                 case sdl.K_Q:
                     quit = true
                 case sdl.K_J:
-                    if focus {
-                        panned_y -= PAN_SPEED
+                    if focus_mode {
+                        focus_state.panned_y -= PAN_SPEED
                     } else {
                         selected = min(len(textures)-1, selected+n_cols)
                     }
                 case sdl.K_K:
-                    if focus {
-                        panned_y += PAN_SPEED
+                    if focus_mode {
+                        focus_state.panned_y += PAN_SPEED
                     } else {
                         selected = max(0, selected-n_cols)
                     }
                 case sdl.K_L:
-                    if focus {
-                        panned_x -= PAN_SPEED
+                    if focus_mode {
+                        focus_state.panned_x -= PAN_SPEED
                     } else {
                         selected = min(len(textures)-1, selected+1)
                     }
                 case sdl.K_H:
-                    if focus {
-                        panned_x += PAN_SPEED
+                    if focus_mode {
+                        focus_state.panned_x += PAN_SPEED
                     }
                     else {
                         selected = max(0, selected-1)
                     }
                 case sdl.K_RETURN:
-                    focus = !focus
+                    focus_mode = !focus_mode
                 case sdl.K_B:
                     draw_bar = !draw_bar
                 case sdl.K_EQUALS:
-                    if focus {
-                        zoom_idx = min(zoom_idx+1, len(zoom_levels)-1)
+                    if focus_mode {
+                        focus_state.zoom_idx = min(focus_state.zoom_idx+1, len(ZOOM_LEVELS)-1)
                     } else {
                         thumb = min(thumb+10, 500)
                     }
                 case sdl.K_MINUS:
-                    if focus {
-                        zoom_idx = max(zoom_idx-1, 0)
+                    if focus_mode {
+                        focus_state.zoom_idx = max(focus_state.zoom_idx-1, 0)
                     } else {
                         thumb = max(thumb-10, 10)
                     }
@@ -294,9 +304,8 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         ww, wh: c.int
         sdl.GetWindowSize(window, &ww, &wh)
 
-        if focus {
-            zoom := zoom_levels[zoom_idx]
-            draw_focus(window, renderer, textures[selected], zoom, &panned_x, &panned_y)
+        if focus_mode {
+            draw_focus(window, renderer, &focus_state, textures[selected])
         } else {
             draw_grid(window, renderer, textures[:], selected, &n_cols, thumb, &first_visible_row)
         }
@@ -313,8 +322,8 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
             defer sdl.DestroyTexture(text_left)
 
             strings.builder_reset(&builder)
-            if focus {
-                strings.write_int(&builder, int(zoom_levels[zoom_idx]*100))
+            if focus_mode {
+                strings.write_int(&builder, int(ZOOM_LEVELS[focus_state.zoom_idx]*100))
                 strings.write_string(&builder, "% ")
             }
             strings.write_int(&builder, selected+1)
