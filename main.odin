@@ -99,6 +99,9 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
 
     zoom_levels := []f32{0.12, 0.25, 0.50, 0.75, 1.00, 1.50, 2.00, 4.00, 8.00}
     zoom_idx := 4
+    PAN_SPEED :: 100
+    panned_x: f32
+    panned_y: f32
 
     thumb: f32 = 120
     focus: bool
@@ -116,13 +119,30 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                 case sdl.K_Q:
                     quit = true
                 case sdl.K_J:
-                    selected = min(len(textures)-1, selected+n_cols)
+                    if focus {
+                        panned_y -= PAN_SPEED
+                    } else {
+                        selected = min(len(textures)-1, selected+n_cols)
+                    }
                 case sdl.K_K:
-                    selected = max(0, selected-n_cols)
+                    if focus {
+                        panned_y += PAN_SPEED
+                    } else {
+                        selected = max(0, selected-n_cols)
+                    }
                 case sdl.K_L:
-                    selected = min(len(textures)-1, selected+1)
+                    if focus {
+                        panned_x -= PAN_SPEED
+                    } else {
+                        selected = min(len(textures)-1, selected+1)
+                    }
                 case sdl.K_H:
-                    selected = max(0, selected-1)
+                    if focus {
+                        panned_x += PAN_SPEED
+                    }
+                    else {
+                        selected = max(0, selected-1)
+                    }
                 case sdl.K_RETURN:
                     focus = !focus
                 case sdl.K_B:
@@ -164,9 +184,42 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
             dst := sdl.FRect {
                 h = scale*th,
                 w = scale*tw,
-                x = f32(ww)/2 - (tw*scale)/2,
-                y = f32(wh)/2 - (th*scale)/2,
             }
+
+            dst.x = (f32(ww)-dst.w)/2
+            dst.y = (f32(wh)-dst.h)/2
+
+            if dst.h > f32(wh) {
+                // clamp: image edge can't go past window edge
+                // top edge: we draw at point 0
+                // bottom edge: we draw at point wh-dst.y We intentionally want negative sign
+                // Why wh-dst.h? Because that's where y starts when panned all the way to bottom.
+
+                // So dst.y+panned_y in range [f32(wh)-dst.h, 0]
+                // panned_y in range [f32(wh)-dst.h-dst.y, 0-dst.y]
+                panned_y = clamp(
+                    panned_y,
+                    f32(wh) - dst.h - dst.y,
+                    -dst.y,
+                )
+                dst.y += panned_y
+            } else {
+                // no panning when image is fully visible
+                panned_y = 0
+            }
+
+            if dst.w > f32(ww) {
+                panned_x = clamp(
+                    panned_x,
+                    f32(ww) - dst.w - dst.x,
+                    -dst.x,
+                )
+                dst.x += panned_x
+            } else {
+                panned_x = 0
+            }
+
+
             sdl.RenderTexture(renderer, t, nil, &dst)
         } else {
             // suppose thumb :: 200
