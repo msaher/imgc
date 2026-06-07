@@ -9,15 +9,27 @@ import sdl "vendor:sdl3"
 import sdl_img "vendor:sdl3/image"
 import sdl_ttf "vendor:sdl3/ttf"
 
+PAN_SPEED :: 100
+ZOOM_LEVELS := []f32{0.12, 0.25, 0.50, 0.75, 1.00, 1.50, 2.00, 4.00, 8.00}
+DEFAULT_ZOOM_LEVEL :: 4
+
 Focus_State :: struct {
     panned_x: f32,
     panned_y: f32,
-
     zoom_idx: int
 }
 
-ZOOM_LEVELS := []f32{0.12, 0.25, 0.50, 0.75, 1.00, 1.50, 2.00, 4.00, 8.00}
-DEFAULT_ZOOM_LEVEL :: 4
+MAX_THUMB :: 500
+MIN_THUMB :: 10
+
+Grid_State :: struct {
+    textures: []^sdl.Texture,
+    paths: []string,
+    selected: int,
+    n_cols: int,
+    thumb: f32,
+    first_visible_row: int,
+}
 
 draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, fc: ^Focus_State, t: ^sdl.Texture) {
     ww, wh: c.int
@@ -72,7 +84,7 @@ draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, fc: ^Focus_Stat
     sdl.RenderTexture(renderer, t, nil, &dst)
 }
 
-draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, textures: []^sdl.Texture, selected: int, n_cols: ^int, thumb: f32, first_visible_row: ^int) {
+draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_State) {
     ww, wh: c.int
     sdl.GetWindowSize(window, &ww, &wh)
     // suppose thumb :: 200
@@ -81,49 +93,49 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, textures: []^sdl
     // max(tw*th)*scale = thumbnail = 200
     gap: f32 : 20
 
-    n_cols ^= int(f32(ww)/(thumb+gap))
-    n_visible_rows := int(f32(wh)/(thumb+gap))
-    if n_cols^ < 1 {
-        n_cols^ = 1
+    grid.n_cols = int(f32(ww)/(grid.thumb+gap))
+    n_visible_rows := int(f32(wh)/(grid.thumb+gap))
+    if grid.n_cols < 1 {
+        grid.n_cols = 1
     }
 
     // center grid
-    grid_w := f32(n_cols^) * (thumb + gap) - gap
+    grid_w := f32(grid.n_cols) * (grid.thumb + gap) - gap
     // grid_h := f32(n_visible_rows * (thumb + gap)-2*gap)
-    total_rows := (len(textures) + n_cols^ - 1) / n_cols^
-    grid_h := f32(total_rows) * (thumb + gap) - gap
+    total_rows := (len(grid.textures) + grid.n_cols - 1) / grid.n_cols
+    grid_h := f32(total_rows) * (grid.thumb + gap) - gap
     x_offset := (f32(ww) - grid_w) / 2
     y_offset := (f32(wh) - grid_h) / 2
     if y_offset < 0 { y_offset = 50 } // don't go negative when grid is taller than window
 
     // determine scroll offset
-    selected_row := selected / n_cols^
-    last_visible_row := first_visible_row^ + n_visible_rows - 1
+    selected_row := grid.selected / grid.n_cols
+    last_visible_row := grid.first_visible_row + n_visible_rows - 1
     if selected_row > last_visible_row {
-        first_visible_row^ += 1
-    } else if selected_row < first_visible_row^ {
-        first_visible_row^ -= 1
+        grid.first_visible_row += 1
+    } else if selected_row < grid.first_visible_row {
+        grid.first_visible_row -= 1
     }
 
     dst: sdl.FRect
-    for t, i in textures {
-        row := i / n_cols^
-        if row < first_visible_row^ || row > last_visible_row {
+    for t, i in grid.textures {
+        row := i / grid.n_cols
+        if row < grid.first_visible_row || row > last_visible_row {
             continue
         }
-        col := i % n_cols^
+        col := i % grid.n_cols
 
         tw, th: f32
         sdl.GetTextureSize(t, &tw, &th)
-        scale := min(f32(thumb) / tw, f32(thumb) / th)
+        scale := min(f32(grid.thumb) / tw, f32(grid.thumb) / th)
         dst.w = tw*scale
         dst.h = th*scale
 
-        dst.x = x_offset + f32(col)*f32(thumb+gap) + (thumb - dst.w)/2
-        dst.y = y_offset + f32(row)*f32(thumb+gap) + (thumb - dst.h)/2 - f32(first_visible_row^)*(thumb+gap)
+        dst.x = x_offset + f32(col)*f32(grid.thumb+gap) + (grid.thumb - dst.w)/2
+        dst.y = y_offset + f32(row)*f32(grid.thumb+gap) + (grid.thumb - dst.h)/2 - f32(grid.first_visible_row)*(grid.thumb+gap)
 
         // draw a box
-        if i == selected {
+        if i == grid.selected {
             sdl.SetRenderDrawColor(renderer, 80, 160, 255, 255)
             thickness :: 3
             for i in 0..<thickness {
@@ -139,7 +151,6 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, textures: []^sdl
 
         sdl.RenderTexture(renderer, t, nil, &dst)
     }
-
 }
 
 run :: proc() -> (sdl_ok: bool, err: os.Error) {
@@ -205,7 +216,6 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     strings.builder_init(&builder) or_return
     defer strings.builder_destroy(&builder)
 
-    selected: int
     textures: [dynamic]^sdl.Texture
     paths: [dynamic]string
     for path in file_args {
@@ -230,16 +240,17 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         sdl.DestroyTexture(texture)
     }
 
-    PAN_SPEED :: 100
+    grid := Grid_State{
+        thumb = 120,
+        textures = textures[:],
+        paths = paths[:],
+    }
     focus_state := Focus_State{
         zoom_idx = DEFAULT_ZOOM_LEVEL
     }
 
-    thumb: f32 = 120
     focus_mode: bool
     draw_bar := true
-    first_visible_row: int
-    n_cols: int
     quit := false
     for !quit {
         ev: sdl.Event
@@ -254,26 +265,26 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                     if focus_mode {
                         focus_state.panned_y -= PAN_SPEED
                     } else {
-                        selected = min(len(textures)-1, selected+n_cols)
+                        grid.selected = min(len(grid.textures)-1, grid.selected+grid.n_cols)
                     }
                 case sdl.K_K:
                     if focus_mode {
                         focus_state.panned_y += PAN_SPEED
                     } else {
-                        selected = max(0, selected-n_cols)
+                        grid.selected = max(0, grid.selected-grid.n_cols)
                     }
                 case sdl.K_L:
                     if focus_mode {
                         focus_state.panned_x -= PAN_SPEED
                     } else {
-                        selected = min(len(textures)-1, selected+1)
+                        grid.selected = min(len(grid.textures)-1, grid.selected+1)
                     }
                 case sdl.K_H:
                     if focus_mode {
                         focus_state.panned_x += PAN_SPEED
                     }
                     else {
-                        selected = max(0, selected-1)
+                        grid.selected = max(0, grid.selected-1)
                     }
                 case sdl.K_RETURN:
                     focus_mode = !focus_mode
@@ -283,13 +294,13 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                     if focus_mode {
                         focus_state.zoom_idx = min(focus_state.zoom_idx+1, len(ZOOM_LEVELS)-1)
                     } else {
-                        thumb = min(thumb+10, 500)
+                        grid.thumb = min(grid.thumb+10, MAX_THUMB)
                     }
                 case sdl.K_MINUS:
                     if focus_mode {
                         focus_state.zoom_idx = max(focus_state.zoom_idx-1, 0)
                     } else {
-                        thumb = max(thumb-10, 10)
+                        grid.thumb = max(grid.thumb-10, MIN_THUMB)
                     }
                 }
             case .QUIT:
@@ -305,15 +316,15 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         sdl.GetWindowSize(window, &ww, &wh)
 
         if focus_mode {
-            draw_focus(window, renderer, &focus_state, textures[selected])
+            draw_focus(window, renderer, &focus_state, grid.textures[grid.selected])
         } else {
-            draw_grid(window, renderer, textures[:], selected, &n_cols, thumb, &first_visible_row)
+            draw_grid(window, renderer, &grid)
         }
         sdl.GetWindowSize(window, &ww, &wh)
 
         // setup text
         if draw_bar {
-            filename := paths[selected]
+            filename := grid.paths[grid.selected]
             cfilename := strings.unsafe_string_to_cstring(filename)
 
             surface := sdl_ttf.RenderText_Blended(font, cfilename, len(filename), sdl.Color{255, 255, 255, 255})
@@ -326,9 +337,9 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                 strings.write_int(&builder, int(ZOOM_LEVELS[focus_state.zoom_idx]*100))
                 strings.write_string(&builder, "% ")
             }
-            strings.write_int(&builder, selected+1)
+            strings.write_int(&builder, grid.selected+1)
             strings.write_byte(&builder, '/')
-            strings.write_int(&builder, len(textures))
+            strings.write_int(&builder, len(grid.textures))
             counter := strings.to_string(builder)
             ccounter := strings.unsafe_string_to_cstring(counter)
             surface = sdl_ttf.RenderText_Blended(font, ccounter, len(counter), sdl.Color{255, 255, 255, 255})
