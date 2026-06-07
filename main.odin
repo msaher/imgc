@@ -153,6 +153,62 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
     }
 }
 
+draw_bar :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, builder: ^strings.Builder, grid: ^Grid_State, focus_state: ^Focus_State, focus_mode: bool, font: ^sdl_ttf.Font) {
+    filename := grid.paths[grid.selected]
+    cfilename := strings.unsafe_string_to_cstring(filename)
+
+    surface := sdl_ttf.RenderText_Blended(font, cfilename, len(filename), sdl.Color{255, 255, 255, 255})
+    text_left := sdl.CreateTextureFromSurface(renderer, surface)
+    sdl.DestroySurface(surface)
+    defer sdl.DestroyTexture(text_left)
+
+    strings.builder_reset(builder)
+    if focus_mode {
+        strings.write_int(builder, int(ZOOM_LEVELS[focus_state.zoom_idx]*100))
+        strings.write_string(builder, "% ")
+    }
+    strings.write_int(builder, grid.selected+1)
+    strings.write_byte(builder, '/')
+    strings.write_int(builder, len(grid.textures))
+    counter := strings.to_string(builder^)
+    ccounter := strings.unsafe_string_to_cstring(counter)
+    surface = sdl_ttf.RenderText_Blended(font, ccounter, len(counter), sdl.Color{255, 255, 255, 255})
+    text_right := sdl.CreateTextureFromSurface(renderer, surface)
+    sdl.DestroySurface(surface)
+    defer sdl.DestroyTexture(text_right)
+
+    tw, th: f32
+    sdl.GetTextureSize(text_left, &tw, &th)
+
+    // draw bar
+    ww, wh: c.int
+    sdl.GetWindowSize(window, &ww, &wh)
+
+    sdl.SetRenderDrawColor(renderer, 0, 0, 0, 255)
+    bar_h := th
+    bar_rect := sdl.FRect {
+        x = 0,
+        w = f32(ww),
+        h = f32(bar_h),
+        y = f32(wh) - f32(bar_h),
+    }
+    sdl.RenderFillRect(renderer, &bar_rect)
+
+    // draw text
+    dst := bar_rect
+    dst.x += 10 // padding
+    dst.w = tw
+    dst.h = th
+    sdl.RenderTexture(renderer, text_left, nil, &dst)
+
+    sdl.GetTextureSize(text_right, &tw, &th)
+    dst.y = bar_rect.y
+    dst.x = f32(ww)-tw-10
+    dst.h = th
+    dst.w = tw
+    sdl.RenderTexture(renderer, text_right, nil, &dst)
+}
+
 run :: proc() -> (sdl_ok: bool, err: os.Error) {
     if len(os.args) < 2 {
         fmt.fprintln(os.stderr, "imgc: wrong number of arguments")
@@ -250,7 +306,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     }
 
     focus_mode: bool
-    draw_bar := true
+    bar_enabled := true
     quit := false
     for !quit {
         ev: sdl.Event
@@ -289,7 +345,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                 case sdl.K_RETURN:
                     focus_mode = !focus_mode
                 case sdl.K_B:
-                    draw_bar = !draw_bar
+                    bar_enabled = !bar_enabled
                 case sdl.K_EQUALS:
                     if focus_mode {
                         focus_state.zoom_idx = min(focus_state.zoom_idx+1, len(ZOOM_LEVELS)-1)
@@ -323,57 +379,8 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         sdl.GetWindowSize(window, &ww, &wh)
 
         // setup text
-        if draw_bar {
-            filename := grid.paths[grid.selected]
-            cfilename := strings.unsafe_string_to_cstring(filename)
-
-            surface := sdl_ttf.RenderText_Blended(font, cfilename, len(filename), sdl.Color{255, 255, 255, 255})
-            text_left := sdl.CreateTextureFromSurface(renderer, surface)
-            sdl.DestroySurface(surface)
-            defer sdl.DestroyTexture(text_left)
-
-            strings.builder_reset(&builder)
-            if focus_mode {
-                strings.write_int(&builder, int(ZOOM_LEVELS[focus_state.zoom_idx]*100))
-                strings.write_string(&builder, "% ")
-            }
-            strings.write_int(&builder, grid.selected+1)
-            strings.write_byte(&builder, '/')
-            strings.write_int(&builder, len(grid.textures))
-            counter := strings.to_string(builder)
-            ccounter := strings.unsafe_string_to_cstring(counter)
-            surface = sdl_ttf.RenderText_Blended(font, ccounter, len(counter), sdl.Color{255, 255, 255, 255})
-            text_right := sdl.CreateTextureFromSurface(renderer, surface)
-            sdl.DestroySurface(surface)
-            defer sdl.DestroyTexture(text_right)
-
-            tw, th: f32
-            sdl.GetTextureSize(text_left, &tw, &th)
-
-            // draw bar
-            sdl.SetRenderDrawColor(renderer, 0, 0, 0, 255)
-            bar_h := th
-            bar_rect := sdl.FRect {
-                x = 0,
-                w = f32(ww),
-                h = f32(bar_h),
-                y = f32(wh) - f32(bar_h),
-            }
-            sdl.RenderFillRect(renderer, &bar_rect)
-
-            // draw text
-            dst := bar_rect
-            dst.x += 10 // padding
-            dst.w = tw
-            dst.h = th
-            sdl.RenderTexture(renderer, text_left, nil, &dst)
-
-            sdl.GetTextureSize(text_right, &tw, &th)
-            dst.y = bar_rect.y
-            dst.x = f32(ww)-tw-10
-            dst.h = th
-            dst.w = tw
-            sdl.RenderTexture(renderer, text_right, nil, &dst)
+        if bar_enabled {
+            draw_bar(window, renderer, &builder, &grid, &focus_state, focus_mode, font)
         }
 
         sdl.RenderPresent(renderer)
