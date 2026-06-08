@@ -109,7 +109,13 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
     capacity_rows := int(vh/stride) // how many rows can we show at once?
     visible_rows := min(total_rows, capacity_rows)
 
+    // when we zoom out (decrease thumb) the number of visible_rows increases
+    // hence, the greatest valid first_visible_row = total-rows-visible,
+    // allowing us to see more as we zoom out. However, we may already be at
+    // the top of the grid, meaning grid.first_visible_row is already lower
+    // than greatest valid first row, so we use min
     grid.first_visible_row = min(grid.first_visible_row, total_rows - visible_rows)
+    // if total_rows is less than visible_rows we get negative. Invalid
     grid.first_visible_row = max(grid.first_visible_row, 0)
 
     selected_row := grid.selected / grid.n_cols
