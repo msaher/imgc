@@ -4,6 +4,7 @@ import "core:c"
 import "core:os"
 import "core:fmt"
 import "core:strings"
+import "core:time"
 import "base:runtime"
 import sdl "vendor:sdl3"
 import sdl_img "vendor:sdl3/image"
@@ -23,8 +24,9 @@ MAX_THUMB :: 500
 MIN_THUMB :: 10
 
 Grid_State :: struct {
-    textures: []^sdl.Texture,
-    paths: []string,
+    paths: [dynamic]string,
+    textures: [dynamic]^sdl.Texture,
+    load_len: int,
     selected: int,
     n_cols: int,
     thumb: f32,
@@ -171,7 +173,9 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
             }
         }
 
-        sdl.RenderTexture(renderer, t, nil, &dst)
+        if t != nil {
+            sdl.RenderTexture(renderer, t, nil, &dst)
+        }
     }
 }
 
@@ -238,8 +242,10 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     }
 
     // collect files. walk dirs
+    // TODO: store infos instead of paths?
     sdl_ok = true
-    file_args: [dynamic]string
+    paths: [dynamic]string
+    defer delete(paths)
     for arg in os.args[1:] {
         info, err := os.stat(arg, context.temp_allocator)
         if err == .Not_Exist {
@@ -252,11 +258,11 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
             for fi in infos {
                 // no recursion
                 if fi.type != .Directory {
-                    append(&file_args, fi.fullpath) or_return
+                    append(&paths, fi.fullpath) or_return
                 }
             }
         } else {
-            append(&file_args, info.fullpath) or_return
+            append(&paths, info.fullpath) or_return
         }
     }
 
@@ -267,14 +273,14 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
 
     window: ^sdl.Window
     renderer: ^sdl.Renderer
-    ok := sdl.CreateWindowAndRenderer("hello", 800, 600, {.RESIZABLE}, &window, &renderer)
+    ok := sdl.CreateWindowAndRenderer("imgc", 800, 600, {.RESIZABLE}, &window, &renderer)
     if !ok {
         return false, nil
     }
     defer sdl.DestroyWindow(window);
     defer sdl.DestroyRenderer(renderer);
 
-    if !sdl.SetRenderVSync(renderer, 1) {
+    if !sdl.SetRenderVSync(renderer, 0) {
         return false, nil
     }
 
@@ -294,35 +300,20 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     strings.builder_init(&builder) or_return
     defer strings.builder_destroy(&builder)
 
-    textures: [dynamic]^sdl.Texture
-    paths: [dynamic]string
-    for path in file_args {
-        cpath := strings.clone_to_cstring(path) or_return
-        defer delete(cpath)
-
-        surface := sdl_img.Load(cpath)
-        if surface == nil {
-            fmt.printf("%s: %s\n", path, sdl.GetError())
-            continue
+    textures := make([dynamic]^sdl.Texture, len(paths))
+    defer {
+        for texture in textures {
+            sdl.DestroyTexture(texture)
         }
-        defer sdl.DestroySurface(surface)
-        texture := sdl.CreateTextureFromSurface(renderer, surface)
-        if texture == nil {
-            return false, nil
-        }
-        append(&textures, texture) or_return
-        append(&paths, path) or_return
-    }
-
-    defer for texture in textures {
-        sdl.DestroyTexture(texture)
+        delete(textures)
     }
 
     grid := Grid_State{
         thumb = 120,
-        textures = textures[:],
-        paths = paths[:],
+        textures = textures,
+        paths = paths,
     }
+
     focus_state := Focus_State{
         zoom_idx = DEFAULT_ZOOM_LEVEL
     }
@@ -330,9 +321,14 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     focus_mode: bool
     bar_enabled := true
     quit := false
+
+    freq  := sdl.GetPerformanceFrequency()
     for !quit {
-        ev: sdl.Event
+        start := sdl.GetPerformanceCounter()
+        budget := u64(f64(freq) * 0.002) // 2ms
+
         // handle events
+        ev: sdl.Event
         for sdl.PollEvent(&ev) {
             #partial switch ev.type {
             case .KEY_DOWN:
@@ -365,7 +361,9 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                         grid.selected = max(0, grid.selected-1)
                     }
                 case sdl.K_RETURN:
-                    focus_mode = !focus_mode
+                    if grid.textures[grid.selected] != nil {
+                        focus_mode = !focus_mode
+                    }
                 case sdl.K_B:
                     bar_enabled = !bar_enabled
                 case sdl.K_EQUALS:
@@ -404,6 +402,37 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         if bar_enabled {
             draw_bar(window, renderer, &builder, &grid, &focus_state, focus_mode, font)
         }
+
+        // load as many thumbnails as you can before end of frame
+        for grid.load_len != len(paths) {
+            now := sdl.GetPerformanceCounter()
+            if (now - start) > budget {
+                break
+            }
+
+            path := grid.paths[grid.load_len]
+            // TODO: use builder?
+            cpath := strings.clone_to_cstring(path) or_return
+            defer delete(cpath)
+            t0 := time.now()
+            grid.textures[grid.load_len] = sdl_img.LoadTexture(renderer, cpath)
+
+            tw, th: f32
+            sdl.GetTextureSize(grid.textures[grid.load_len], &tw, &th)
+            fmt.printf("%s, w = %g, h = %g\n", time.since(t0), tw, th)
+
+            if grid.textures[grid.load_len] == nil {
+                fmt.printf("%s: %s\n", path, sdl.GetError())
+                // skip it
+                ordered_remove(&grid.paths, grid.load_len)
+                ordered_remove(&grid.textures, grid.load_len)
+            } else {
+                grid.load_len += 1
+            }
+        }
+
+
+
 
         sdl.RenderPresent(renderer)
     }
