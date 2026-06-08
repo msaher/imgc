@@ -89,34 +89,48 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
     // (400x200) --> (200x100), scale = 0.5
     // (800x600) --> (200x150), scale = 0.25
     // max(tw*th)*scale = thumbnail = 200
-    ww, wh: c.int
-    sdl.GetWindowSize(window, &ww, &wh)
+    vh, vw: f32
+    {
+        ww, wh: c.int
+        sdl.GetWindowSize(window, &ww, &wh)
+        padding :: 50
+        vw = f32(ww)-padding
+        vh = f32(wh)-padding
+    }
     gap: f32 : 20
 
     stride := grid.thumb+gap
-    grid.n_cols = int(f32(ww)/(stride))
-    n_visible_rows := int(f32(wh)/(stride))
+    grid.n_cols = int(f32(vw)/(stride))
     if grid.n_cols < 1 {
         grid.n_cols = 1
     }
 
-    // center grid
-    grid_w := f32(grid.n_cols) * (grid.thumb + gap) - gap
-    // grid_h := f32(n_visible_rows * (thumb + gap)-2*gap)
     total_rows := (len(grid.textures) + grid.n_cols - 1) / grid.n_cols
-    grid_h := f32(total_rows) * (grid.thumb + gap) - gap
-    x_offset := (f32(ww) - grid_w) / 2
-    y_offset := (f32(wh) - grid_h) / 2
-    if y_offset < 0 { y_offset = 50 } // don't go negative when grid is taller than window
+    capacity_rows := int(vh/stride) // how many rows can we show at once?
+    visible_rows := min(total_rows, capacity_rows)
 
-    // determine scroll offset
+    grid.first_visible_row = min(grid.first_visible_row, total_rows - visible_rows)
+    grid.first_visible_row = max(grid.first_visible_row, 0)
+
     selected_row := grid.selected / grid.n_cols
-    last_visible_row := grid.first_visible_row + n_visible_rows - 1
+    last_visible_row := grid.first_visible_row + visible_rows - 1
+    if last_visible_row >= total_rows {
+        last_visible_row = total_rows-1
+    }
+
     if selected_row > last_visible_row {
         grid.first_visible_row += 1
     } else if selected_row < grid.first_visible_row {
         grid.first_visible_row -= 1
     }
+
+
+    grid_h := f32(visible_rows) * stride - gap
+    y_offset := (f32(vh) - grid_h) / 2
+
+    // center grid x axis
+    grid_w := f32(grid.n_cols)*stride - gap
+    x_offset := (f32(vw) - grid_w) / 2
 
     dst: sdl.FRect
     for t, i in grid.textures {
@@ -133,7 +147,8 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
         dst.h = th*scale
 
         dst.x = x_offset + f32(col)*f32(stride) + (grid.thumb - dst.w)/2
-        dst.y = y_offset + f32(row)*f32(stride) + (grid.thumb - dst.h)/2 - f32(grid.first_visible_row)*(stride)
+        visible_row := row - grid.first_visible_row
+        dst.y = y_offset + f32(visible_row)*f32(stride) + (grid.thumb - dst.h)/2
 
         // draw a box
         if i == grid.selected {
