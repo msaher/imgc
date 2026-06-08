@@ -266,6 +266,11 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         }
     }
 
+    if len(paths) == 0 {
+        fmt.println("no valid paths given. exiting...")
+        return true, nil
+    }
+
     if !sdl.Init({.VIDEO}) {
         return false, nil
     }
