@@ -285,7 +285,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     defer sdl.DestroyWindow(window);
     defer sdl.DestroyRenderer(renderer);
 
-    if !sdl.SetRenderVSync(renderer, 0) {
+    if !sdl.SetRenderVSync(renderer, 1) {
         return false, nil
     }
 
@@ -416,28 +416,21 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
             }
 
             path := grid.paths[grid.load_len]
-            // TODO: use builder?
-            cpath := strings.clone_to_cstring(path) or_return
-            defer delete(cpath)
-            t0 := time.now()
-            grid.textures[grid.load_len] = sdl_img.LoadTexture(renderer, cpath)
+            strings.builder_reset(&builder)
+            strings.write_string(&builder, path)
+            cpath := strings.to_cstring(&builder) or_return
 
-            tw, th: f32
-            sdl.GetTextureSize(grid.textures[grid.load_len], &tw, &th)
-            fmt.printf("%s, w = %g, h = %g\n", time.since(t0), tw, th)
-
-            if grid.textures[grid.load_len] == nil {
-                fmt.printf("%s: %s\n", path, sdl.GetError())
+            t := sdl_img.LoadTexture(renderer, cpath)
+            if t == nil {
                 // skip it
+                fmt.printf("%s: %s\n", path, sdl.GetError())
                 ordered_remove(&grid.paths, grid.load_len)
                 ordered_remove(&grid.textures, grid.load_len)
             } else {
+                grid.textures[grid.load_len] = t
                 grid.load_len += 1
             }
         }
-
-
-
 
         sdl.RenderPresent(renderer)
     }
