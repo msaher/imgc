@@ -45,27 +45,25 @@ Image_Task :: struct {
     img: Image,
 }
 
-Worker_Payload :: struct {
-    r: chan.Chan(Image_Task, .Recv),
-    s: chan.Chan(Worker_Result, .Send),
-}
+Image_Decoded_Event: sdl.EventType
 
-Worker_Result :: struct {
-    id: int,
-    surface: ^sdl.Surface,
-}
-
-worker_load_surface :: proc(p: Worker_Payload) {
+worker_load_surface :: proc(ch: chan.Chan(Image_Task, .Recv)) {
     for {
-        task, ok := chan.recv(p.r)
+        task, ok := chan.recv(ch)
         if !ok {
             break
         }
         cpath := strings.clone_to_cstring(task.img.path)
         defer delete(cpath)
         surf := sdl_img.Load(cpath)
-        res := Worker_Result{task.id, surf}
-        chan.send(p.s, res)
+        ev: sdl.Event
+        ev.type = sdl.EventType(Image_Decoded_Event)
+        ev.user.data1 = rawptr(uintptr(task.id))
+        ev.user.data2 = rawptr(surf)
+        ok = sdl.PushEvent(&ev)
+        if !ok {
+            fmt.fprintf(os.stderr, "can't push image decoded event %s: %s", task.img, sdl.GetError())
+        }
     }
 }
 
@@ -364,20 +362,21 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     }
 
     // start worker threads for loading surfaces
+    Image_Decoded_Event = cast(sdl.EventType)sdl.RegisterEvents(1)
+
     tasks := chan.create_buffered(chan.Chan(Image_Task), len(images), context.allocator) or_return
     defer chan.destroy(tasks)
-    pending_surfaces := chan.create_buffered(chan.Chan(Worker_Result), len(images), context.allocator) or_return
-    defer chan.destroy(pending_surfaces)
     for img, i in images {
         chan.send(tasks, Image_Task{i, img})
     }
     chan.close(tasks)
-    n_threads := min(os.get_processor_core_count(), 8)
+    // n_threads := min(os.get_processor_core_count(), 8)
+    n_threads := 1
     threads: [dynamic; 8]^thread.Thread
     invalid_image_idxs: [dynamic]int
 
     for i in 0..<n_threads {
-        th := thread.create_and_start_with_poly_data(Worker_Payload{chan.as_recv(tasks), chan.as_send(pending_surfaces)}, worker_load_surface)
+        th := thread.create_and_start_with_poly_data(chan.as_recv(tasks), worker_load_surface)
         append(&threads, th)
     }
 
@@ -401,6 +400,16 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         ev: sdl.Event
         for sdl.PollEvent(&ev) {
             #partial switch ev.type {
+            case Image_Decoded_Event:
+                id := cast(uintptr)ev.user.data1
+                surface := cast(^sdl.Surface)ev.user.data2
+                t := sdl.CreateTextureFromSurface(renderer, surface)
+                // TODO: handle holes
+                grid.images[id].texture = t
+                grid.load_len += 1
+
+                sdl.DestroySurface(surface)
+
             case .KEY_DOWN:
                 switch ev.key.key {
                 case sdl.K_Q:
@@ -471,24 +480,6 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         // setup text
         if bar_enabled {
             draw_bar(window, renderer, &builder, &grid, &focus_state, focus_mode, font)
-        }
-
-        // upload pending surfaces to GPU before end of frame
-        for grid.load_len != len(grid.images) {
-            now := sdl.GetPerformanceCounter()
-            if (now - start) > budget {
-                break
-            }
-            res, ok := chan.try_recv(pending_surfaces)
-            if !ok {
-                break
-            }
-
-            // TODO: check null surfaces
-            t := sdl.CreateTextureFromSurface(renderer, res.surface)
-            sdl.DestroySurface(res.surface)
-            grid.images[res.id].texture = t
-            grid.load_len += 1
         }
 
         sdl.RenderPresent(renderer)
