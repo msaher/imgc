@@ -6,7 +6,6 @@ import "core:os"
 import "core:fmt"
 import "core:strings"
 import "core:thread"
-import "base:runtime"
 
 import sdl "vendor:sdl3"
 import sdl_img "vendor:sdl3/image"
@@ -197,12 +196,12 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
         if i == grid.selected {
             sdl.SetRenderDrawColor(renderer, 80, 160, 255, 255)
             thickness :: 3
-            for i in 0..<thickness {
+            for j in 0..<thickness {
                 r := sdl.FRect{
-                    x = dst.x - f32(i),
-                    y = dst.y - f32(i),
-                    w = dst.w + f32(i)*2,
-                    h = dst.h + f32(i)*2,
+                    x = dst.x - f32(j),
+                    y = dst.y - f32(j),
+                    w = dst.w + f32(j)*2,
+                    h = dst.h + f32(j)*2,
                 }
                 sdl.RenderRect(renderer, &r)
             }
@@ -292,8 +291,8 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
 
     for arg in os.args[1:] {
         img := Image{}
-        info, err := os.stat(arg, context.temp_allocator)
-        if err == .Not_Exist {
+        info, err1 := os.stat(arg, context.temp_allocator)
+        if err1 == .Not_Exist {
             fmt.printf("%s: No such file or directory\n", arg)
             continue
         }
@@ -373,9 +372,8 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     // n_threads := min(os.get_processor_core_count(), 8)
     n_threads := 1
     threads: [dynamic; 8]^thread.Thread
-    invalid_image_idxs: [dynamic]int
 
-    for i in 0..<n_threads {
+    for _ in 0..<n_threads {
         th := thread.create_and_start_with_poly_data(chan.as_recv(tasks), worker_load_surface)
         append(&threads, th)
     }
@@ -391,11 +389,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     bar_enabled := true
     quit := false
 
-    freq  := sdl.GetPerformanceFrequency()
     for !quit {
-        start := sdl.GetPerformanceCounter()
-        budget := u64(f64(freq) * 0.002) // 2ms
-
         // handle events
         ev: sdl.Event
         for sdl.PollEvent(&ev) {
@@ -492,6 +486,9 @@ main :: proc() {
     sdl_ok, err := run()
     if !sdl_ok {
         fmt.fprintln(os.stderr, string(sdl.GetError()))
+        os.exit(1)
+    } else if err != nil {
+        fmt.fprintln(os.stderr, err)
         os.exit(1)
     }
 }
