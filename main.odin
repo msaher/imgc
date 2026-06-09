@@ -372,11 +372,13 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         chan.send(tasks, Image_Task{i, img})
     }
     chan.close(tasks)
-    n_threads :: 4
-    threads: [n_threads]^thread.Thread
+    n_threads := min(os.get_processor_core_count(), 8)
+    threads: [dynamic; 8]^thread.Thread
+    invalid_image_idxs: [dynamic]int
+
     for i in 0..<n_threads {
         th := thread.create_and_start_with_poly_data(Worker_Payload{chan.as_recv(tasks), chan.as_send(pending_surfaces)}, worker_load_surface)
-        threads[i] = th
+        append(&threads, th)
     }
 
     defer {
