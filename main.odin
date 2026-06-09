@@ -1,11 +1,13 @@
 package main
 
+import "core:sync/chan"
 import "core:c"
 import "core:os"
 import "core:fmt"
 import "core:strings"
-import "core:time"
+import "core:thread"
 import "base:runtime"
+
 import sdl "vendor:sdl3"
 import sdl_img "vendor:sdl3/image"
 import sdl_ttf "vendor:sdl3/ttf"
@@ -36,6 +38,35 @@ Grid_State :: struct {
     n_cols: int,
     thumb: f32,
     first_visible_row: int,
+}
+
+Image_Task :: struct {
+    id: int,
+    img: Image,
+}
+
+Worker_Payload :: struct {
+    r: chan.Chan(Image_Task, .Recv),
+    s: chan.Chan(Worker_Result, .Send),
+}
+
+Worker_Result :: struct {
+    id: int,
+    surface: ^sdl.Surface,
+}
+
+worker_load_surface :: proc(p: Worker_Payload) {
+    for {
+        task, ok := chan.recv(p.r)
+        if !ok {
+            break
+        }
+        cpath := strings.clone_to_cstring(task.img.path)
+        defer delete(cpath)
+        surf := sdl_img.Load(cpath)
+        res := Worker_Result{task.id, surf}
+        chan.send(p.s, res)
+    }
 }
 
 draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, fc: ^Focus_State, t: ^sdl.Texture) {
@@ -332,6 +363,29 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         zoom_idx = DEFAULT_ZOOM_LEVEL
     }
 
+    // start worker threads for loading surfaces
+    tasks := chan.create_buffered(chan.Chan(Image_Task), len(images), context.allocator) or_return
+    defer chan.destroy(tasks)
+    pending_surfaces := chan.create_buffered(chan.Chan(Worker_Result), len(images), context.allocator) or_return
+    defer chan.destroy(pending_surfaces)
+    for img, i in images {
+        chan.send(tasks, Image_Task{i, img})
+    }
+    chan.close(tasks)
+    n_threads :: 4
+    threads: [n_threads]^thread.Thread
+    for i in 0..<n_threads {
+        th := thread.create_and_start_with_poly_data(Worker_Payload{chan.as_recv(tasks), chan.as_send(pending_surfaces)}, worker_load_surface)
+        threads[i] = th
+    }
+
+    defer {
+        thread.join_multiple(..threads[:])
+        for th in threads {
+            thread.destroy(th)
+        }
+    }
+
     focus_mode: bool
     bar_enabled := true
     quit := false
@@ -417,34 +471,22 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
             draw_bar(window, renderer, &builder, &grid, &focus_state, focus_mode, font)
         }
 
-        // load as many thumbnails as you can before end of frame
+        // upload pending surfaces to GPU before end of frame
         for grid.load_len != len(grid.images) {
             now := sdl.GetPerformanceCounter()
             if (now - start) > budget {
                 break
             }
-
-            path := grid.images[grid.load_len].path
-            strings.builder_reset(&builder)
-            strings.write_string(&builder, path)
-            cpath := strings.to_cstring(&builder) or_return
-
-            t0 := time.now()
-            surface := sdl_img.Load(cpath)
-            t1 := time.now()
-            t := sdl.CreateTextureFromSurface(renderer, surface)
-            sdl.DestroySurface(surface)
-            t2 := time.now()
-            base := os.base(path)
-            fmt.printf("base = %s, surface = %s, texture = %s\n", base, time.diff(t0, t1), time.diff(t1, t2))
-            if t == nil {
-                // skip it
-                fmt.printf("%s: %s\n", path, sdl.GetError())
-                ordered_remove(&grid.images, grid.load_len)
-            } else {
-                grid.images[grid.load_len].texture = t
-                grid.load_len += 1
+            res, ok := chan.try_recv(pending_surfaces)
+            if !ok {
+                break
             }
+
+            // TODO: check null surfaces
+            t := sdl.CreateTextureFromSurface(renderer, res.surface)
+            sdl.DestroySurface(res.surface)
+            grid.images[res.id].texture = t
+            grid.load_len += 1
         }
 
         sdl.RenderPresent(renderer)
