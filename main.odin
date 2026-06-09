@@ -10,6 +10,12 @@ import sdl "vendor:sdl3"
 import sdl_img "vendor:sdl3/image"
 import sdl_ttf "vendor:sdl3/ttf"
 
+Image :: struct {
+    path: string,
+    surface: ^sdl.Surface,
+    texture: ^sdl.Texture,
+}
+
 PAN_SPEED :: 100
 ZOOM_LEVELS := []f32{0.12, 0.25, 0.50, 0.75, 1.00, 1.50, 2.00, 4.00, 8.00}
 DEFAULT_ZOOM_LEVEL :: 4
@@ -17,15 +23,14 @@ DEFAULT_ZOOM_LEVEL :: 4
 Focus_State :: struct {
     panned_x: f32,
     panned_y: f32,
-    zoom_idx: int
+    zoom_idx: int,
 }
 
 MAX_THUMB :: 500
 MIN_THUMB :: 10
 
 Grid_State :: struct {
-    paths: [dynamic]string,
-    textures: [dynamic]^sdl.Texture,
+    images: [dynamic]Image,
     load_len: int,
     selected: int,
     n_cols: int,
@@ -107,7 +112,7 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
         grid.n_cols = 1
     }
 
-    total_rows := (len(grid.textures) + grid.n_cols - 1) / grid.n_cols
+    total_rows := (len(grid.images) + grid.n_cols - 1) / grid.n_cols
     capacity_rows := int(vh/stride) // how many rows can we show at once?
     visible_rows := min(total_rows, capacity_rows)
 
@@ -141,7 +146,8 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
     x_offset := (f32(vw) - grid_w) / 2
 
     dst: sdl.FRect
-    for t, i in grid.textures {
+    for img, i in grid.images {
+        t := img.texture
         row := i / grid.n_cols
         if row < grid.first_visible_row || row > last_visible_row {
             continue
@@ -180,7 +186,7 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
 }
 
 draw_bar :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, builder: ^strings.Builder, grid: ^Grid_State, focus_state: ^Focus_State, focus_mode: bool, font: ^sdl_ttf.Font) {
-    filename := grid.paths[grid.selected]
+    filename := grid.images[grid.selected].path
     cfilename := strings.unsafe_string_to_cstring(filename)
 
     surface := sdl_ttf.RenderText_Blended(font, cfilename, len(filename), sdl.Color{255, 255, 255, 255})
@@ -195,7 +201,7 @@ draw_bar :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, builder: ^strings
     }
     strings.write_int(builder, grid.selected+1)
     strings.write_byte(builder, '/')
-    strings.write_int(builder, len(grid.textures))
+    strings.write_int(builder, len(grid.images))
     counter := strings.to_string(builder^)
     ccounter := strings.unsafe_string_to_cstring(counter)
     surface = sdl_ttf.RenderText_Blended(font, ccounter, len(counter), sdl.Color{255, 255, 255, 255})
@@ -244,9 +250,19 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     // collect files. walk dirs
     // TODO: store infos instead of paths?
     sdl_ok = true
-    paths: [dynamic]string
-    defer delete(paths)
+    images: [dynamic]Image
+    defer {
+        for img in images {
+            delete(img.path)
+            if img.texture != nil {
+                sdl.DestroyTexture(img.texture)
+            }
+        }
+        delete(images)
+    }
+
     for arg in os.args[1:] {
+        img := Image{}
         info, err := os.stat(arg, context.temp_allocator)
         if err == .Not_Exist {
             fmt.printf("%s: No such file or directory\n", arg)
@@ -258,15 +274,17 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
             for fi in infos {
                 // no recursion
                 if fi.type != .Directory {
-                    append(&paths, fi.fullpath) or_return
+                    img.path = fi.fullpath
+                    append(&images, img) or_return
                 }
             }
         } else {
-            append(&paths, info.fullpath) or_return
+            img.path = info.fullpath
+            append(&images, img) or_return
         }
     }
 
-    if len(paths) == 0 {
+    if len(images) == 0 {
         fmt.println("no valid paths given. exiting...")
         return true, nil
     }
@@ -305,18 +323,9 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     strings.builder_init(&builder) or_return
     defer strings.builder_destroy(&builder)
 
-    textures := make([dynamic]^sdl.Texture, len(paths))
-    defer {
-        for texture in textures {
-            sdl.DestroyTexture(texture)
-        }
-        delete(textures)
-    }
-
     grid := Grid_State{
+        images = images,
         thumb = 120,
-        textures = textures,
-        paths = paths,
     }
 
     focus_state := Focus_State{
@@ -344,7 +353,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                     if focus_mode {
                         focus_state.panned_y -= PAN_SPEED
                     } else {
-                        grid.selected = min(len(grid.textures)-1, grid.selected+grid.n_cols)
+                        grid.selected = min(len(grid.images)-1, grid.selected+grid.n_cols)
                     }
                 case sdl.K_K:
                     if focus_mode {
@@ -356,7 +365,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                     if focus_mode {
                         focus_state.panned_x -= PAN_SPEED
                     } else {
-                        grid.selected = min(len(grid.textures)-1, grid.selected+1)
+                        grid.selected = min(len(grid.images)-1, grid.selected+1)
                     }
                 case sdl.K_H:
                     if focus_mode {
@@ -366,7 +375,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                         grid.selected = max(0, grid.selected-1)
                     }
                 case sdl.K_RETURN:
-                    if grid.textures[grid.selected] != nil {
+                    if grid.images[grid.selected].texture != nil {
                         focus_mode = !focus_mode
                     }
                 case sdl.K_B:
@@ -397,7 +406,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         sdl.GetWindowSize(window, &ww, &wh)
 
         if focus_mode {
-            draw_focus(window, renderer, &focus_state, grid.textures[grid.selected])
+            draw_focus(window, renderer, &focus_state, grid.images[grid.selected].texture)
         } else {
             draw_grid(window, renderer, &grid)
         }
@@ -409,25 +418,31 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         }
 
         // load as many thumbnails as you can before end of frame
-        for grid.load_len != len(paths) {
+        for grid.load_len != len(grid.images) {
             now := sdl.GetPerformanceCounter()
             if (now - start) > budget {
                 break
             }
 
-            path := grid.paths[grid.load_len]
+            path := grid.images[grid.load_len].path
             strings.builder_reset(&builder)
             strings.write_string(&builder, path)
             cpath := strings.to_cstring(&builder) or_return
 
-            t := sdl_img.LoadTexture(renderer, cpath)
+            t0 := time.now()
+            surface := sdl_img.Load(cpath)
+            t1 := time.now()
+            t := sdl.CreateTextureFromSurface(renderer, surface)
+            sdl.DestroySurface(surface)
+            t2 := time.now()
+            base := os.base(path)
+            fmt.printf("base = %s, surface = %s, texture = %s\n", base, time.diff(t0, t1), time.diff(t1, t2))
             if t == nil {
                 // skip it
                 fmt.printf("%s: %s\n", path, sdl.GetError())
-                ordered_remove(&grid.paths, grid.load_len)
-                ordered_remove(&grid.textures, grid.load_len)
+                ordered_remove(&grid.images, grid.load_len)
             } else {
-                grid.textures[grid.load_len] = t
+                grid.images[grid.load_len].texture = t
                 grid.load_len += 1
             }
         }
