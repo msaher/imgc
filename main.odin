@@ -54,6 +54,15 @@ grid_len_valid :: proc(g: ^Grid_State) -> int {
     return len(g.valids)
 }
 
+grid_select_next :: proc(g: ^Grid_State, i: int) {
+    g.selected = clamp(0, len(g.valids)-1, g.selected+i)
+}
+
+grid_select_prev :: proc(g: ^Grid_State, i: int) {
+    grid_select_next(g, -i)
+}
+
+
 sorted_inject :: proc(s: ^[dynamic]int, value: int) -> runtime.Allocator_Error {
     if len(s) == 0 {
         _, err := append(s, value)
@@ -449,30 +458,29 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                 case sdl.K_Q:
                     quit = true
                 case sdl.K_J:
-                    // TODO: grid_select_next()
                     if focus_mode {
                         focus_state.panned_y -= PAN_SPEED
                     } else {
-                        grid.selected = min(len(grid.valids)-1, grid.selected+grid.n_cols)
+                        grid_select_next(&grid, grid.n_cols)
                     }
                 case sdl.K_K:
                     if focus_mode {
                         focus_state.panned_y += PAN_SPEED
                     } else {
-                        grid.selected = max(0, grid.selected-grid.n_cols)
+                        grid_select_prev(&grid, grid.n_cols)
                     }
                 case sdl.K_L:
                     if focus_mode {
                         focus_state.panned_x -= PAN_SPEED
                     } else {
-                        grid.selected = min(len(grid.valids)-1, grid.selected+1)
+                        grid_select_next(&grid, 1)
                     }
                 case sdl.K_H:
                     if focus_mode {
                         focus_state.panned_x += PAN_SPEED
                     }
                     else {
-                        grid.selected = max(0, grid.selected-1)
+                        grid_select_prev(&grid, 1)
                     }
                 case sdl.K_RETURN:
                     if grid_selected_image(&grid).texture != nil {
