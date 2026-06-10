@@ -1,21 +1,21 @@
 package main
 
 import "base:runtime"
-import "core:sync/chan"
 import "core:c"
 import "core:os"
 import "core:fmt"
 import "core:strings"
-import "core:thread"
+
+import "imlib"
 
 import sdl "vendor:sdl3"
-import sdl_img "vendor:sdl3/image"
 import sdl_ttf "vendor:sdl3/ttf"
 
 Image :: struct {
     path: string,
-    surface: ^sdl.Surface,
-    texture: ^sdl.Texture,
+    full: ^sdl.Texture,
+    thumbnail: ^sdl.Texture,
+    im: imlib.Image,
 }
 
 PAN_SPEED :: 100
@@ -34,6 +34,7 @@ MIN_THUMB :: 10
 Grid_State :: struct {
     images: [dynamic]Image,
     valids: [dynamic]int,
+    load_len: int,
     selected: int,
     n_cols: int,
     thumb: f32,
@@ -55,7 +56,7 @@ grid_len_valid :: proc(g: ^Grid_State) -> int {
 }
 
 grid_select_next :: proc(g: ^Grid_State, i: int) {
-    g.selected = clamp(0, len(g.valids)-1, g.selected+i)
+    g.selected = clamp(g.selected+i, 0, len(g.valids)-1)
 }
 
 grid_select_prev :: proc(g: ^Grid_State, i: int) {
@@ -77,33 +78,6 @@ sorted_inject :: proc(s: ^[dynamic]int, value: int) -> runtime.Allocator_Error {
     }
     _, err := append(s, value)
     return err
-}
-
-Image_Task :: struct {
-    id: int,
-    img: Image,
-}
-
-Image_Decoded_Event: sdl.EventType
-
-worker_load_surface :: proc(ch: chan.Chan(Image_Task, .Recv)) {
-    for {
-        task, ok := chan.recv(ch)
-        if !ok {
-            break
-        }
-        cpath := strings.clone_to_cstring(task.img.path)
-        defer delete(cpath)
-        surf := sdl_img.Load(cpath)
-        ev: sdl.Event
-        ev.type = sdl.EventType(Image_Decoded_Event)
-        ev.user.data1 = rawptr(uintptr(task.id))
-        ev.user.data2 = rawptr(surf)
-        ok = sdl.PushEvent(&ev)
-        if !ok {
-            fmt.fprintf(os.stderr, "can't push image decoded event %s: %s", task.img, sdl.GetError())
-        }
-    }
 }
 
 draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, fc: ^Focus_State, t: ^sdl.Texture) {
@@ -215,7 +189,10 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
 
     dst: sdl.FRect
     for i in 0..<len(grid.valids) {
-        t := grid_get_valid(grid, i).texture
+        t := grid_get_valid(grid, i).thumbnail
+        if t == nil { // no need
+            continue
+        }
         row := i / grid.n_cols
         if row < grid.first_visible_row || row > last_visible_row {
             continue
@@ -254,10 +231,10 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
 }
 
 draw_bar :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, builder: ^strings.Builder, grid: ^Grid_State, focus_state: ^Focus_State, focus_mode: bool, font: ^sdl_ttf.Font) {
+
     if grid_len_valid(grid) == 0 {
         return
     }
-
     filename := grid_selected_image(grid).path
     cfilename := strings.unsafe_string_to_cstring(filename)
 
@@ -274,7 +251,7 @@ draw_bar :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, builder: ^strings
     // abstract this
     strings.write_int(builder, grid.selected+1)
     strings.write_byte(builder, '/')
-    strings.write_int(builder, len(grid.valids))
+    strings.write_int(builder, len(grid.images))
     counter := strings.to_string(builder^)
     ccounter := strings.unsafe_string_to_cstring(counter)
     surface = sdl_ttf.RenderText_Blended(font, ccounter, len(counter), sdl.Color{255, 255, 255, 255})
@@ -326,8 +303,11 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     images: [dynamic]Image
     defer {
         for img in images {
-            if img.texture != nil {
-                sdl.DestroyTexture(img.texture)
+            if img.thumbnail != nil {
+                sdl.DestroyTexture(img.thumbnail)
+            }
+            if img.full != nil {
+                sdl.DestroyTexture(img.full)
             }
         }
         delete(images)
@@ -407,52 +387,19 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         zoom_idx = DEFAULT_ZOOM_LEVEL
     }
 
-    // start worker threads for loading surfaces
-    Image_Decoded_Event = cast(sdl.EventType)sdl.RegisterEvents(1)
-
-    tasks := chan.create_buffered(chan.Chan(Image_Task), len(images), context.allocator) or_return
-    defer chan.destroy(tasks)
-    for img, i in images {
-        chan.send(tasks, Image_Task{i, img})
-    }
-    chan.close(tasks)
-    n_threads := min(os.get_processor_core_count(), 8)
-    // n_threads := 1
-    threads: [dynamic; 8]^thread.Thread
-
-    for _ in 0..<n_threads {
-        th := thread.create_and_start_with_poly_data(chan.as_recv(tasks), worker_load_surface)
-        append(&threads, th)
-    }
-
-    defer {
-        thread.join_multiple(..threads[:])
-        for th in threads {
-            thread.destroy(th)
-        }
-    }
-
     focus_mode: bool
     bar_enabled := true
     quit := false
 
+    freq := sdl.GetPerformanceFrequency()
     for !quit {
+        start := sdl.GetPerformanceCounter()
+        budget := u64(f64(freq) * 0.002) // 2ms
+
         // handle events
         ev: sdl.Event
         for sdl.PollEvent(&ev) {
             #partial switch ev.type {
-            case Image_Decoded_Event:
-                id := cast(uintptr)ev.user.data1
-                surface := cast(^sdl.Surface)ev.user.data2
-                if surface != nil {
-                    t := sdl.CreateTextureFromSurface(renderer, surface)
-                    sdl.DestroySurface(surface)
-                    if t != nil {
-                        grid.images[id].texture = t
-                        sorted_inject(&grid.valids, int(id)) or_return
-                    }
-                }
-
             case .KEY_DOWN:
                 switch ev.key.key {
                 case sdl.K_Q:
@@ -483,7 +430,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                         grid_select_prev(&grid, 1)
                     }
                 case sdl.K_RETURN:
-                    if grid_selected_image(&grid).texture != nil {
+                    if grid_selected_image(&grid).thumbnail != nil {
                         focus_mode = !focus_mode
                     }
                 case sdl.K_B:
@@ -514,7 +461,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         sdl.GetWindowSize(window, &ww, &wh)
 
         if focus_mode {
-            draw_focus(window, renderer, &focus_state, grid_selected_image(&grid).texture)
+            draw_focus(window, renderer, &focus_state, grid_selected_image(&grid).full)
         } else {
             draw_grid(window, renderer, &grid)
         }
@@ -524,6 +471,43 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         if bar_enabled {
             draw_bar(window, renderer, &builder, &grid, &focus_state, focus_mode, font)
         }
+
+        for grid.load_len != len(grid.images) {
+            now := sdl.GetPerformanceCounter()
+            if (now - start) > budget {
+                break
+            }
+            defer grid.load_len += 1
+            id := grid.load_len
+            img := &grid.images[id]
+
+            // load one image
+            strings.builder_reset(&builder)
+            strings.write_string(&builder, img.path)
+            cpath := strings.to_cstring(&builder)
+            im := imlib.load_image(cpath)
+            if im == nil {
+                fmt.printf("%s: %d\n", img.path, imlib.get_error())
+                continue
+            }
+            imlib.context_set_image(im)
+            w_full := imlib.image_get_width()
+            h_full := imlib.image_get_height()
+            im_small := imlib.create_cropped_scaled_image(0, 0, w_full, h_full, c.int(grid.thumb), c.int(grid.thumb))
+            imlib.free_image()
+            imlib.context_set_image(im_small)
+            w := imlib.image_get_width()
+            h := imlib.image_get_height()
+
+            // create texture
+            thumbnail := sdl.CreateTexture(renderer, .ARGB8888, .STATIC, w, h)
+            pixels := imlib.image_get_data_for_reading_only()
+            sdl.UpdateTexture(thumbnail, nil, rawptr(pixels), w * size_of(pixels[0]))
+            img.thumbnail = thumbnail
+            imlib.free_image()
+            append(&grid.valids, id)
+        }
+
 
         sdl.RenderPresent(renderer)
     }
