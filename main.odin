@@ -1,5 +1,6 @@
 package main
 
+import "base:runtime"
 import "core:sync/chan"
 import "core:c"
 import "core:os"
@@ -32,11 +33,41 @@ MIN_THUMB :: 10
 
 Grid_State :: struct {
     images: [dynamic]Image,
-    load_len: int,
+    valids: [dynamic]int,
     selected: int,
     n_cols: int,
     thumb: f32,
     first_visible_row: int,
+}
+
+grid_selected_image :: proc(g: ^Grid_State) -> Image {
+    idx := g.valids[g.selected]
+    return g.images[idx]
+}
+
+grid_get_valid :: proc(g: ^Grid_State, i: int) -> Image {
+    idx := g.valids[i]
+    return g.images[idx]
+}
+
+grid_len_valid :: proc(g: ^Grid_State) -> int {
+    return len(g.valids)
+}
+
+sorted_inject :: proc(s: ^[dynamic]int, value: int) -> runtime.Allocator_Error {
+    if len(s) == 0 {
+        _, err := append(s, value)
+        return err
+    }
+
+    for i in 0..<len(s) {
+        if s[i] >= value {
+            _, err := inject_at(s, i, value)
+            return err
+        }
+    }
+    _, err := append(s, value)
+    return err
 }
 
 Image_Task :: struct {
@@ -140,7 +171,7 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
         grid.n_cols = 1
     }
 
-    total_rows := (len(grid.images) + grid.n_cols - 1) / grid.n_cols
+    total_rows := (len(grid.valids) + grid.n_cols - 1) / grid.n_cols
     capacity_rows := int(vh/stride) // how many rows can we show at once?
     visible_rows := min(total_rows, capacity_rows)
 
@@ -174,8 +205,8 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
     x_offset := (f32(vw) - grid_w) / 2
 
     dst: sdl.FRect
-    for img, i in grid.images {
-        t := img.texture
+    for i in 0..<len(grid.valids) {
+        t := grid_get_valid(grid, i).texture
         row := i / grid.n_cols
         if row < grid.first_visible_row || row > last_visible_row {
             continue
@@ -214,7 +245,11 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
 }
 
 draw_bar :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, builder: ^strings.Builder, grid: ^Grid_State, focus_state: ^Focus_State, focus_mode: bool, font: ^sdl_ttf.Font) {
-    filename := grid.images[grid.selected].path
+    if grid_len_valid(grid) == 0 {
+        return
+    }
+
+    filename := grid_selected_image(grid).path
     cfilename := strings.unsafe_string_to_cstring(filename)
 
     surface := sdl_ttf.RenderText_Blended(font, cfilename, len(filename), sdl.Color{255, 255, 255, 255})
@@ -227,9 +262,10 @@ draw_bar :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, builder: ^strings
         strings.write_int(builder, int(ZOOM_LEVELS[focus_state.zoom_idx]*100))
         strings.write_string(builder, "% ")
     }
+    // abstract this
     strings.write_int(builder, grid.selected+1)
     strings.write_byte(builder, '/')
-    strings.write_int(builder, len(grid.images))
+    strings.write_int(builder, len(grid.valids))
     counter := strings.to_string(builder^)
     ccounter := strings.unsafe_string_to_cstring(counter)
     surface = sdl_ttf.RenderText_Blended(font, ccounter, len(counter), sdl.Color{255, 255, 255, 255})
@@ -281,7 +317,6 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     images: [dynamic]Image
     defer {
         for img in images {
-            delete(img.path)
             if img.texture != nil {
                 sdl.DestroyTexture(img.texture)
             }
@@ -351,8 +386,11 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     strings.builder_init(&builder) or_return
     defer strings.builder_destroy(&builder)
 
+    valids: [dynamic]int
+    defer delete(valids)
     grid := Grid_State{
         images = images,
+        valids = valids,
         thumb = 120,
     }
 
@@ -369,8 +407,8 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         chan.send(tasks, Image_Task{i, img})
     }
     chan.close(tasks)
-    // n_threads := min(os.get_processor_core_count(), 8)
-    n_threads := 1
+    n_threads := min(os.get_processor_core_count(), 8)
+    // n_threads := 1
     threads: [dynamic; 8]^thread.Thread
 
     for _ in 0..<n_threads {
@@ -397,22 +435,25 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
             case Image_Decoded_Event:
                 id := cast(uintptr)ev.user.data1
                 surface := cast(^sdl.Surface)ev.user.data2
-                t := sdl.CreateTextureFromSurface(renderer, surface)
-                // TODO: handle holes
-                grid.images[id].texture = t
-                grid.load_len += 1
-
-                sdl.DestroySurface(surface)
+                if surface != nil {
+                    t := sdl.CreateTextureFromSurface(renderer, surface)
+                    sdl.DestroySurface(surface)
+                    if t != nil {
+                        grid.images[id].texture = t
+                        sorted_inject(&grid.valids, int(id)) or_return
+                    }
+                }
 
             case .KEY_DOWN:
                 switch ev.key.key {
                 case sdl.K_Q:
                     quit = true
                 case sdl.K_J:
+                    // TODO: grid_select_next()
                     if focus_mode {
                         focus_state.panned_y -= PAN_SPEED
                     } else {
-                        grid.selected = min(len(grid.images)-1, grid.selected+grid.n_cols)
+                        grid.selected = min(len(grid.valids)-1, grid.selected+grid.n_cols)
                     }
                 case sdl.K_K:
                     if focus_mode {
@@ -424,7 +465,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                     if focus_mode {
                         focus_state.panned_x -= PAN_SPEED
                     } else {
-                        grid.selected = min(len(grid.images)-1, grid.selected+1)
+                        grid.selected = min(len(grid.valids)-1, grid.selected+1)
                     }
                 case sdl.K_H:
                     if focus_mode {
@@ -434,7 +475,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                         grid.selected = max(0, grid.selected-1)
                     }
                 case sdl.K_RETURN:
-                    if grid.images[grid.selected].texture != nil {
+                    if grid_selected_image(&grid).texture != nil {
                         focus_mode = !focus_mode
                     }
                 case sdl.K_B:
@@ -465,7 +506,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         sdl.GetWindowSize(window, &ww, &wh)
 
         if focus_mode {
-            draw_focus(window, renderer, &focus_state, grid.images[grid.selected].texture)
+            draw_focus(window, renderer, &focus_state, grid_selected_image(&grid).texture)
         } else {
             draw_grid(window, renderer, &grid)
         }
