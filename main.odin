@@ -26,6 +26,7 @@ Focus_State :: struct {
     panned_x: f32,
     panned_y: f32,
     zoom_idx: int,
+    img: Image,
     texture: ^sdl.Texture,
 }
 
@@ -166,22 +167,24 @@ sorted_inject :: proc(s: ^[dynamic]int, value: int) -> runtime.Allocator_Error {
     return err
 }
 
-draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, fc: ^Focus_State, image: Image) {
-    // free old one
-    if fc.texture != nil {
-        sdl.DestroyTexture(fc.texture)
-    }
-    t, ok := image_load_as_texture(renderer, image)
-    fc.texture = t
-    if !ok {
-        return
+draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, fc: ^Focus_State, img: Image) {
+    // set image... maybe make proc
+    if fc.img != img {
+        if fc.texture != nil {
+            sdl.DestroyTexture(fc.texture)
+        }
+        t, ok := image_load_as_texture(renderer, img)
+        fc.texture = t
+        if !ok {
+            return
+        }
     }
 
     ww, wh: c.int
     sdl.GetWindowSize(window, &ww, &wh)
 
     tw, th: f32
-    sdl.GetTextureSize(t, &tw, &th)
+    sdl.GetTextureSize(fc.texture, &tw, &th)
     scale := min(f32(ww)/tw, f32(wh)/th)
     if scale > 1 {
         scale = 1
@@ -226,7 +229,7 @@ draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, fc: ^Focus_Stat
         fc.panned_x = 0
     }
 
-    sdl.RenderTexture(renderer, t, nil, &dst)
+    sdl.RenderTexture(renderer, fc.texture, nil, &dst)
 }
 
 draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid) {
@@ -547,6 +550,20 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
             }
         }
 
+        for !grid_are_all_loaded(&grid) {
+            if !grid_load_next_img(&grid, renderer, &builder) {
+                ordered_remove(&grid.images, grid.n_loaded)
+            }
+
+            if sdl.HasEvents(.FIRST, .LAST) {
+                break
+            }
+            now := sdl.GetPerformanceCounter()
+            if (now - start) > budget {
+                break
+            }
+        }
+
         // draw
         sdl.SetRenderDrawColor(renderer, 20, 20, 20, 255)
         sdl.RenderClear(renderer)
@@ -565,17 +582,6 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         if bar_enabled {
             draw_bar(window, renderer, &builder, &grid, &focus_state, focus_mode, font)
         }
-
-        for !grid_are_all_loaded(&grid) {
-            now := sdl.GetPerformanceCounter()
-            if (now - start) > budget {
-                break
-            }
-            if !grid_load_next_img(&grid, renderer, &builder) {
-                ordered_remove(&grid.images, grid.n_loaded)
-            }
-        }
-
 
         sdl.RenderPresent(renderer)
     }
