@@ -16,6 +16,7 @@ foreign imlib {
     context_set_anti_alias :: proc(anti_alias: bool) ---
 
     free_image :: proc() ---
+    free_image_and_decache :: proc() ---
 
     get_error :: proc() -> c.int ---
 

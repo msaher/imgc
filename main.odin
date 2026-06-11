@@ -11,11 +11,11 @@ import "imlib"
 import sdl "vendor:sdl3"
 import sdl_ttf "vendor:sdl3/ttf"
 
+// TODO: store file path also as given by argv instead of full
+// path
 Image :: struct {
-    path: string,
-    full: ^sdl.Texture,
     thumbnail: ^sdl.Texture,
-    im: imlib.Image,
+    file: os.File_Info,
 }
 
 PAN_SPEED :: 100
@@ -26,43 +26,129 @@ Focus_State :: struct {
     panned_x: f32,
     panned_y: f32,
     zoom_idx: int,
+    texture: ^sdl.Texture,
 }
 
-MAX_THUMB :: 500
-MIN_THUMB :: 10
+MAX_THUMB :: 160
+MIN_THUMB :: 32
 
-Grid_State :: struct {
+Grid :: struct {
     images: [dynamic]Image,
-    valids: [dynamic]int,
-    load_len: int,
+    n_loaded: int,
     selected: int,
-    n_cols: int,
     thumb: f32,
+
+    // for drawing
+    n_cols: int,
     first_visible_row: int,
 }
 
-grid_selected_image :: proc(g: ^Grid_State) -> Image {
-    idx := g.valids[g.selected]
-    return g.images[idx]
+grid_are_all_loaded :: proc(g: ^Grid) -> bool {
+    return g.n_loaded == len(g.images)
 }
 
-grid_get_valid :: proc(g: ^Grid_State, i: int) -> Image {
-    idx := g.valids[i]
-    return g.images[idx]
+grid_selected_image :: proc(g: ^Grid) -> Image {
+    return g.images[g.selected]
 }
 
-grid_len_valid :: proc(g: ^Grid_State) -> int {
-    return len(g.valids)
+grid_select_next :: proc(g: ^Grid, i: int) {
+    g.selected = clamp(g.selected+i, 0, len(g.images)-1)
 }
 
-grid_select_next :: proc(g: ^Grid_State, i: int) {
-    g.selected = clamp(g.selected+i, 0, len(g.valids)-1)
-}
-
-grid_select_prev :: proc(g: ^Grid_State, i: int) {
+grid_select_prev :: proc(g: ^Grid, i: int) {
     grid_select_next(g, -i)
 }
 
+grid_load_next_img :: proc(g: ^Grid, renderer: ^sdl.Renderer, builder: ^strings.Builder) -> bool {
+    idx := g.n_loaded
+    img := &g.images[idx]
+    strings.builder_reset(builder)
+    strings.write_string(builder, img.file.fullpath)
+    cpath := strings.to_cstring(builder)
+
+    im := imlib.load_image(cpath)
+    if im == nil {
+        fmt.fprintf(os.stderr, "%s: %d\n", cpath, imlib.get_error())
+        return false
+    }
+
+    // scale image down
+    im = img_scale_down(im, MAX_THUMB)
+    if im == nil {
+        fmt.fprintf(os.stderr, "%s: failed to scale image: %d\n", cpath, imlib.get_error())
+        return false
+    }
+    imlib.context_set_image(im)
+
+    // create texture... make maybe proc
+    w := imlib.image_get_width()
+    h := imlib.image_get_height()
+    pixels := imlib.image_get_data_for_reading_only()
+    thumbnail := sdl.CreateTexture(renderer, .ARGB8888, .STATIC, w, h)
+    ok := sdl.UpdateTexture(thumbnail, nil, rawptr(pixels), w * size_of(c.uint32_t))
+
+    if !ok {
+        fmt.fprintf(os.stderr, "%s: texture error: %s\n", cpath, sdl.GetError())
+        return false
+    }
+
+    img.thumbnail = thumbnail
+
+    // do we really need to do this?
+    imlib.free_image() // free scaled image
+
+    g.n_loaded += 1
+    return true
+}
+
+img_scale_down :: proc(im: imlib.Image, thumb: f32) -> imlib.Image {
+    imlib.context_set_image(im)
+    wi := imlib.image_get_width()
+    hi := imlib.image_get_height()
+    w := f32(wi)
+    h := f32(hi)
+
+    scale := min(thumb / w, thumb / h)
+	scale = min(scale, 1.0);
+
+    if scale < 1 {
+        imlib.context_set_anti_alias(true)
+        im_scaled := imlib.create_cropped_scaled_image(0, 0, wi, hi, i32(scale*w), i32(scale*h))
+        imlib.free_image_and_decache()
+        return im_scaled
+    }
+    return im
+}
+
+image_load_as_texture :: proc(renderer: ^sdl.Renderer, img: Image) -> (^sdl.Texture, bool) {
+    // TODO: use builder
+    cpath := strings.clone_to_cstring(img.file.fullpath)
+    defer delete(cpath)
+    im := imlib.load_image(cpath)
+    if im == nil {
+        return nil, false
+    }
+    t, ok := create_texture_from_im(renderer, im)
+    return t, ok
+}
+
+create_texture_from_im :: proc(renderer: ^sdl.Renderer, im: imlib.Image) -> (^sdl.Texture, bool) {
+    imlib.context_set_image(im)
+    w := imlib.image_get_width()
+    h := imlib.image_get_height()
+    pixels := imlib.image_get_data_for_reading_only()
+    if pixels == nil {
+        return nil, false
+    }
+
+    t := sdl.CreateTexture(renderer, .ARGB8888, .STATIC, w, h)
+    if t == nil {
+        return nil, false
+    }
+
+    ok := sdl.UpdateTexture(t, nil, rawptr(pixels), w * size_of(c.uint32_t))
+    return t, ok
+}
 
 sorted_inject :: proc(s: ^[dynamic]int, value: int) -> runtime.Allocator_Error {
     if len(s) == 0 {
@@ -80,7 +166,17 @@ sorted_inject :: proc(s: ^[dynamic]int, value: int) -> runtime.Allocator_Error {
     return err
 }
 
-draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, fc: ^Focus_State, t: ^sdl.Texture) {
+draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, fc: ^Focus_State, image: Image) {
+    // free old one
+    if fc.texture != nil {
+        sdl.DestroyTexture(fc.texture)
+    }
+    t, ok := image_load_as_texture(renderer, image)
+    fc.texture = t
+    if !ok {
+        return
+    }
+
     ww, wh: c.int
     sdl.GetWindowSize(window, &ww, &wh)
 
@@ -133,7 +229,7 @@ draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, fc: ^Focus_Stat
     sdl.RenderTexture(renderer, t, nil, &dst)
 }
 
-draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_State) {
+draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid) {
     // suppose thumb :: 200
     // (400x200) --> (200x100), scale = 0.5
     // (800x600) --> (200x150), scale = 0.25
@@ -154,7 +250,7 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
         grid.n_cols = 1
     }
 
-    total_rows := (len(grid.valids) + grid.n_cols - 1) / grid.n_cols
+    total_rows := (len(grid.images) + grid.n_cols - 1) / grid.n_cols
     capacity_rows := int(vh/stride) // how many rows can we show at once?
     visible_rows := min(total_rows, capacity_rows)
 
@@ -188,8 +284,8 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
     x_offset := (f32(vw) - grid_w) / 2
 
     dst: sdl.FRect
-    for i in 0..<len(grid.valids) {
-        t := grid_get_valid(grid, i).thumbnail
+    for i in 0..<len(grid.images) {
+        t := grid.images[i].thumbnail
         if t == nil { // no need
             continue
         }
@@ -230,12 +326,9 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid_Stat
     }
 }
 
-draw_bar :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, builder: ^strings.Builder, grid: ^Grid_State, focus_state: ^Focus_State, focus_mode: bool, font: ^sdl_ttf.Font) {
+draw_bar :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, builder: ^strings.Builder, grid: ^Grid, focus_state: ^Focus_State, focus_mode: bool, font: ^sdl_ttf.Font) {
 
-    if grid_len_valid(grid) == 0 {
-        return
-    }
-    filename := grid_selected_image(grid).path
+    filename := grid_selected_image(grid).file.fullpath
     cfilename := strings.unsafe_string_to_cstring(filename)
 
     surface := sdl_ttf.RenderText_Blended(font, cfilename, len(filename), sdl.Color{255, 255, 255, 255})
@@ -306,9 +399,9 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
             if img.thumbnail != nil {
                 sdl.DestroyTexture(img.thumbnail)
             }
-            if img.full != nil {
-                sdl.DestroyTexture(img.full)
-            }
+            // if img.full != nil {
+            //     sdl.DestroyTexture(img.full)
+            // }
         }
         delete(images)
     }
@@ -326,12 +419,12 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
             for fi in infos {
                 // no recursion
                 if fi.type != .Directory {
-                    img.path = fi.fullpath
+                    img.file = fi
                     append(&images, img) or_return
                 }
             }
         } else {
-            img.path = info.fullpath
+            img.file = info
             append(&images, img) or_return
         }
     }
@@ -375,16 +468,16 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     strings.builder_init(&builder) or_return
     defer strings.builder_destroy(&builder)
 
-    valids: [dynamic]int
-    defer delete(valids)
-    grid := Grid_State{
+    grid := Grid{
         images = images,
-        valids = valids,
         thumb = 120,
     }
 
     focus_state := Focus_State{
         zoom_idx = DEFAULT_ZOOM_LEVEL
+    }
+    defer if focus_state.texture != nil {
+        sdl.DestroyTexture(focus_state.texture)
     }
 
     focus_mode: bool
@@ -439,6 +532,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                     if focus_mode {
                         focus_state.zoom_idx = min(focus_state.zoom_idx+1, len(ZOOM_LEVELS)-1)
                     } else {
+                        // TODO: use levels for thumbnails as well
                         grid.thumb = min(grid.thumb+10, MAX_THUMB)
                     }
                 case sdl.K_MINUS:
@@ -461,7 +555,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         sdl.GetWindowSize(window, &ww, &wh)
 
         if focus_mode {
-            draw_focus(window, renderer, &focus_state, grid_selected_image(&grid).full)
+            draw_focus(window, renderer, &focus_state, grid_selected_image(&grid))
         } else {
             draw_grid(window, renderer, &grid)
         }
@@ -472,40 +566,14 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
             draw_bar(window, renderer, &builder, &grid, &focus_state, focus_mode, font)
         }
 
-        for grid.load_len != len(grid.images) {
+        for !grid_are_all_loaded(&grid) {
             now := sdl.GetPerformanceCounter()
             if (now - start) > budget {
                 break
             }
-            defer grid.load_len += 1
-            id := grid.load_len
-            img := &grid.images[id]
-
-            // load one image
-            strings.builder_reset(&builder)
-            strings.write_string(&builder, img.path)
-            cpath := strings.to_cstring(&builder)
-            im := imlib.load_image(cpath)
-            if im == nil {
-                fmt.printf("%s: %d\n", img.path, imlib.get_error())
-                continue
+            if !grid_load_next_img(&grid, renderer, &builder) {
+                ordered_remove(&grid.images, grid.n_loaded)
             }
-            imlib.context_set_image(im)
-            w_full := imlib.image_get_width()
-            h_full := imlib.image_get_height()
-            im_small := imlib.create_cropped_scaled_image(0, 0, w_full, h_full, c.int(grid.thumb), c.int(grid.thumb))
-            imlib.free_image()
-            imlib.context_set_image(im_small)
-            w := imlib.image_get_width()
-            h := imlib.image_get_height()
-
-            // create texture
-            thumbnail := sdl.CreateTexture(renderer, .ARGB8888, .STATIC, w, h)
-            pixels := imlib.image_get_data_for_reading_only()
-            sdl.UpdateTexture(thumbnail, nil, rawptr(pixels), w * size_of(pixels[0]))
-            img.thumbnail = thumbnail
-            imlib.free_image()
-            append(&grid.valids, id)
         }
 
 
