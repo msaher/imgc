@@ -567,41 +567,43 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     focus_mode: bool
     bar_enabled := true
     quit := false
-    if !sdl.SetRenderVSync(renderer, 1) {
-        return false, nil
-    }
-    freq := sdl.GetPerformanceFrequency()
-    for !quit {
-        budget := u64(f64(freq) * 0.002) // 2ms
-        start := sdl.GetPerformanceCounter()
 
-        // handle events
+    sdl.SetRenderVSync(renderer, 0)
+    REDRAW_INTERVAL :: 200
+
+    last_redraw := sdl.GetTicks() - REDRAW_INTERVAL
+    needs_redraw := true
+    for !quit {
         ev: sdl.Event
+
+        // block only when nothing to do, otherwise poll
+        if grid_are_all_loaded(&grid) && sdl.WaitEvent(&ev) {
+            quit = handle_event(&ev, &focus_mode, &bar_enabled, &focus_state, &grid)
+            needs_redraw = true
+        }
         for sdl.PollEvent(&ev) {
             quit = handle_event(&ev, &focus_mode, &bar_enabled, &focus_state, &grid)
+            needs_redraw = true
         }
 
-        if !sdl.HasEvents(.FIRST, .LAST) {
-            for !grid_are_all_loaded(&grid) {
-                if !grid_load_next_img(&grid, renderer) {
-                    ordered_remove(&grid.images, grid.n_loaded)
-                }
-
-                if sdl.HasEvents(.FIRST, .LAST) {
-                    break
-                }
-                now := sdl.GetPerformanceCounter()
-                if (now - start) > budget {
-                    break
-                }
+        // load one image if work remains and no events pending
+        if !grid_are_all_loaded(&grid) && !needs_redraw && !sdl.HasEvents(.FIRST, .LAST) {
+            if !grid_load_next_img(&grid, renderer) {
+                ordered_remove(&grid.images, grid.n_loaded)
+            }
+            // schedule a redraw after interval
+            now := sdl.GetTicks()
+            if now - last_redraw >= REDRAW_INTERVAL {
+                needs_redraw = true
             }
         }
 
-        // draw
-        // should probably be grouped in a struct
-        draw(window, renderer, bar_enabled, focus_mode, &grid, &focus_state)
-
-        sdl.RenderPresent(renderer)
+        if needs_redraw {
+            draw(window, renderer, bar_enabled, focus_mode, &grid, &focus_state)
+            sdl.RenderPresent(renderer)
+            last_redraw = sdl.GetTicks()
+            needs_redraw = false
+        }
     }
 
     return true, nil
