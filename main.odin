@@ -404,7 +404,7 @@ draw_bar :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid, focu
     sdl.RenderTexture(renderer, text_right, nil, &dst)
 }
 
-draw :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, bar: bool, focus_mode: bool, g: ^Grid, f: ^Focus_State) {
+draw :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, bar: bool, focus_mode: bool, g: ^Grid, f: ^Focus_State, font: ^sdl_ttf.Font) {
     sdl.SetRenderDrawColor(renderer, 20, 20, 20, 255)
     sdl.RenderClear(renderer)
 
@@ -413,6 +413,10 @@ draw :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, bar: bool, focus_mode
         draw_focus(window, renderer, f, img)
     } else {
         draw_grid(window, renderer, g)
+    }
+
+    if bar {
+        draw_bar(window, renderer, g, f, focus_mode, font)
     }
 }
 
@@ -602,7 +606,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
 
         now := sdl.GetTicks()
         if had_event || now - last_redraw >= REDRAW_INTERVAL {
-            draw(window, renderer, bar_enabled, focus_mode, &grid, &focus_state)
+            draw(window, renderer, bar_enabled, focus_mode, &grid, &focus_state, font)
             sdl.RenderPresent(renderer)
             last_redraw = now
         }
