@@ -106,15 +106,15 @@ grid_load_next_img :: proc(g: ^Grid, renderer: ^sdl.Renderer) -> bool {
         return false
     }
 
+    // do we really need to do this?
+    // free scaled image
+    defer image_unload(img)
+
     thumbnail, ok1 := create_texture_from_image(renderer, img)
     if !ok1 {
         return false
     }
     img.thumbnail = thumbnail
-
-    // do we really need to do this?
-    // free scaled image
-    image_unload(img)
 
     g.n_loaded += 1
     return true
@@ -404,6 +404,76 @@ draw_bar :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid, focu
     sdl.RenderTexture(renderer, text_right, nil, &dst)
 }
 
+draw :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, bar: bool, focus_mode: bool, g: ^Grid, f: ^Focus_State) {
+    sdl.SetRenderDrawColor(renderer, 20, 20, 20, 255)
+    sdl.RenderClear(renderer)
+
+    if focus_mode {
+        img := grid_selected_image(g)
+        draw_focus(window, renderer, f, img)
+    } else {
+        draw_grid(window, renderer, g)
+    }
+}
+
+handle_event :: proc(ev: ^sdl.Event, focus_mode: ^bool, bar_enabled: ^bool, focus_state: ^Focus_State, grid: ^Grid) -> bool {
+    #partial switch ev.type {
+    case .KEY_DOWN:
+        switch ev.key.key {
+        case sdl.K_Q:
+            return true
+        case sdl.K_J:
+            if focus_mode^ {
+                focus_state.panned_y -= PAN_SPEED
+            } else {
+                grid_select_next(grid, grid.n_cols)
+            }
+        case sdl.K_K:
+            if focus_mode^ {
+                focus_state.panned_y += PAN_SPEED
+            } else {
+                grid_select_prev(grid, grid.n_cols)
+            }
+        case sdl.K_L:
+            if focus_mode^ {
+                focus_state.panned_x -= PAN_SPEED
+            } else {
+                grid_select_next(grid, 1)
+            }
+        case sdl.K_H:
+            if focus_mode^ {
+                focus_state.panned_x += PAN_SPEED
+            }
+            else {
+                grid_select_prev(grid, 1)
+            }
+        case sdl.K_RETURN:
+            if grid_selected_image(grid).thumbnail != nil {
+                focus_mode^ = !focus_mode^
+            }
+        case sdl.K_B:
+            bar_enabled^ = !bar_enabled^
+        case sdl.K_EQUALS:
+            if focus_mode^ {
+                focus_state.zoom_idx = min(focus_state.zoom_idx+1, len(ZOOM_LEVELS)-1)
+            } else {
+                // TODO: use levels for thumbnails as well
+                grid.thumb = min(grid.thumb+10, MAX_THUMB)
+            }
+        case sdl.K_MINUS:
+            if focus_mode^ {
+                focus_state.zoom_idx = max(focus_state.zoom_idx-1, 0)
+            } else {
+                grid.thumb = max(grid.thumb-10, MIN_THUMB)
+            }
+        }
+    case .QUIT:
+        return true
+    }
+
+    return false
+}
+
 run :: proc() -> (sdl_ok: bool, err: os.Error) {
     if len(os.args) < 2 {
         fmt.fprintln(os.stderr, "imgc: wrong number of arguments")
@@ -467,10 +537,6 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     defer sdl.DestroyWindow(window);
     defer sdl.DestroyRenderer(renderer);
 
-    if !sdl.SetRenderVSync(renderer, 1) {
-        return false, nil
-    }
-
     if !sdl_ttf.Init() {
         return false, nil
     }
@@ -501,103 +567,39 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     focus_mode: bool
     bar_enabled := true
     quit := false
-
+    if !sdl.SetRenderVSync(renderer, 1) {
+        return false, nil
+    }
     freq := sdl.GetPerformanceFrequency()
     for !quit {
-        start := sdl.GetPerformanceCounter()
         budget := u64(f64(freq) * 0.002) // 2ms
+        start := sdl.GetPerformanceCounter()
 
         // handle events
         ev: sdl.Event
         for sdl.PollEvent(&ev) {
-            #partial switch ev.type {
-            case .KEY_DOWN:
-                switch ev.key.key {
-                case sdl.K_Q:
-                    quit = true
-                case sdl.K_J:
-                    if focus_mode {
-                        focus_state.panned_y -= PAN_SPEED
-                    } else {
-                        grid_select_next(&grid, grid.n_cols)
-                    }
-                case sdl.K_K:
-                    if focus_mode {
-                        focus_state.panned_y += PAN_SPEED
-                    } else {
-                        grid_select_prev(&grid, grid.n_cols)
-                    }
-                case sdl.K_L:
-                    if focus_mode {
-                        focus_state.panned_x -= PAN_SPEED
-                    } else {
-                        grid_select_next(&grid, 1)
-                    }
-                case sdl.K_H:
-                    if focus_mode {
-                        focus_state.panned_x += PAN_SPEED
-                    }
-                    else {
-                        grid_select_prev(&grid, 1)
-                    }
-                case sdl.K_RETURN:
-                    if grid_selected_image(&grid).thumbnail != nil {
-                        focus_mode = !focus_mode
-                    }
-                case sdl.K_B:
-                    bar_enabled = !bar_enabled
-                case sdl.K_EQUALS:
-                    if focus_mode {
-                        focus_state.zoom_idx = min(focus_state.zoom_idx+1, len(ZOOM_LEVELS)-1)
-                    } else {
-                        // TODO: use levels for thumbnails as well
-                        grid.thumb = min(grid.thumb+10, MAX_THUMB)
-                    }
-                case sdl.K_MINUS:
-                    if focus_mode {
-                        focus_state.zoom_idx = max(focus_state.zoom_idx-1, 0)
-                    } else {
-                        grid.thumb = max(grid.thumb-10, MIN_THUMB)
-                    }
-                }
-            case .QUIT:
-                quit = true
-            }
+            quit = handle_event(&ev, &focus_mode, &bar_enabled, &focus_state, &grid)
         }
 
-        for !grid_are_all_loaded(&grid) {
-            if !grid_load_next_img(&grid, renderer) {
-                ordered_remove(&grid.images, grid.n_loaded)
-            }
+        if !sdl.HasEvents(.FIRST, .LAST) {
+            for !grid_are_all_loaded(&grid) {
+                if !grid_load_next_img(&grid, renderer) {
+                    ordered_remove(&grid.images, grid.n_loaded)
+                }
 
-            if sdl.HasEvents(.FIRST, .LAST) {
-                break
-            }
-            now := sdl.GetPerformanceCounter()
-            if (now - start) > budget {
-                break
+                if sdl.HasEvents(.FIRST, .LAST) {
+                    break
+                }
+                now := sdl.GetPerformanceCounter()
+                if (now - start) > budget {
+                    break
+                }
             }
         }
 
         // draw
-        sdl.SetRenderDrawColor(renderer, 20, 20, 20, 255)
-        sdl.RenderClear(renderer)
-
-        ww, wh: c.int
-        sdl.GetWindowSize(window, &ww, &wh)
-
-        if focus_mode {
-            img := grid_selected_image(&grid)
-            draw_focus(window, renderer, &focus_state, img)
-        } else {
-            draw_grid(window, renderer, &grid)
-        }
-        sdl.GetWindowSize(window, &ww, &wh)
-
-        // setup text
-        if bar_enabled {
-            draw_bar(window, renderer, &grid, &focus_state, focus_mode, font)
-        }
+        // should probably be grouped in a struct
+        draw(window, renderer, bar_enabled, focus_mode, &grid, &focus_state)
 
         sdl.RenderPresent(renderer)
     }
