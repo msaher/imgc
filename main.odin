@@ -141,8 +141,6 @@ image_scale_down :: proc(img: ^Image, thumb: f32) -> bool {
 }
 
 create_texture_from_image :: proc(renderer: ^sdl.Renderer, img: ^Image) -> (^sdl.Texture, bool) {
-    // load again
-    image_load(img)
     imlib.context_set_image(img.im)
     w := imlib.image_get_width()
     h := imlib.image_get_height()
@@ -186,14 +184,17 @@ sorted_inject :: proc(s: ^[dynamic]int, value: int) -> runtime.Allocator_Error {
 draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, fc: ^Focus_State, img: ^Image) {
     // set image... maybe make proc
     if fc.img != img {
+        fc.img = img
         if fc.texture != nil {
             sdl.DestroyTexture(fc.texture)
         }
+        image_load(fc.img)
+        defer image_unload(fc.img)
         t, ok := create_texture_from_image(renderer, img)
-        fc.texture = t
         if !ok {
             return
         }
+        fc.texture = t
     }
 
     ww, wh: c.int
@@ -576,14 +577,14 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     last_redraw := sdl.GetTicks() - REDRAW_INTERVAL
     for !quit {
         ev: sdl.Event
-        had_event := false
+        redraw := false
 
         for sdl.PollEvent(&ev) {
             quit = quit || handle_event(&ev, &focus_mode, &bar_enabled, &focus_state, &grid)
-            had_event = true
+            redraw = true
         }
 
-        if !had_event {
+        if !redraw {
             for !grid_are_all_loaded(&grid) {
                 if !grid_load_next_img(&grid, renderer) {
                     ordered_remove(&grid.images, grid.n_loaded)
@@ -592,12 +593,13 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
                     break
                 }
             }
+            redraw = true
         }
 
-        if grid_are_all_loaded(&grid) {
-            if !had_event && sdl.WaitEvent(&ev) {
+        if grid_are_all_loaded(&grid) && !redraw {
+            if !redraw && sdl.WaitEvent(&ev) {
                 quit = quit || handle_event(&ev, &focus_mode, &bar_enabled, &focus_state, &grid)
-                had_event = true
+                redraw = true
                 for sdl.PollEvent(&ev) {
                     quit = quit || handle_event(&ev, &focus_mode, &bar_enabled, &focus_state, &grid)
                 }
@@ -605,7 +607,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         }
 
         now := sdl.GetTicks()
-        if had_event || now - last_redraw >= REDRAW_INTERVAL {
+        if redraw || now - last_redraw >= REDRAW_INTERVAL {
             draw(window, renderer, bar_enabled, focus_mode, &grid, &focus_state, font)
             sdl.RenderPresent(renderer)
             last_redraw = now
