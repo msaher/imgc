@@ -11,11 +11,39 @@ import "imlib"
 import sdl "vendor:sdl3"
 import sdl_ttf "vendor:sdl3/ttf"
 
+// general purpose builder. Resets every frame
+g_builder: strings.Builder
+
+
+// get a *temporary* cstring
+as_cstring :: proc(s: string) -> cstring {
+    strings.builder_reset(&g_builder)
+    strings.write_string(&g_builder, s)
+    return strings.to_cstring(&g_builder)
+}
+
 // TODO: store file path also as given by argv instead of full
 // path
 Image :: struct {
     thumbnail: ^sdl.Texture,
     file: os.File_Info,
+    im: imlib.Image
+}
+
+image_load :: proc(img: ^Image) -> bool {
+    // maybe use builder
+    p := as_cstring(img.file.fullpath)
+    img.im = imlib.load_image(p)
+    if img.im == nil {
+        return false
+    }
+    return true
+}
+
+image_unload :: proc(img: ^Image) {
+    imlib.context_set_image(img.im)
+    imlib.free_image()
+    img.im = nil
 }
 
 PAN_SPEED :: 100
@@ -26,7 +54,7 @@ Focus_State :: struct {
     panned_x: f32,
     panned_y: f32,
     zoom_idx: int,
-    img: Image,
+    img: ^Image,
     texture: ^sdl.Texture,
 }
 
@@ -48,8 +76,8 @@ grid_are_all_loaded :: proc(g: ^Grid) -> bool {
     return g.n_loaded == len(g.images)
 }
 
-grid_selected_image :: proc(g: ^Grid) -> Image {
-    return g.images[g.selected]
+grid_selected_image :: proc(g: ^Grid) -> ^Image {
+    return &g.images[g.selected]
 }
 
 grid_select_next :: proc(g: ^Grid, i: int) {
@@ -60,50 +88,40 @@ grid_select_prev :: proc(g: ^Grid, i: int) {
     grid_select_next(g, -i)
 }
 
-grid_load_next_img :: proc(g: ^Grid, renderer: ^sdl.Renderer, builder: ^strings.Builder) -> bool {
+grid_load_next_img :: proc(g: ^Grid, renderer: ^sdl.Renderer) -> bool {
     idx := g.n_loaded
     img := &g.images[idx]
-    strings.builder_reset(builder)
-    strings.write_string(builder, img.file.fullpath)
-    cpath := strings.to_cstring(builder)
+    path := img.file.fullpath
 
-    im := imlib.load_image(cpath)
-    if im == nil {
-        fmt.fprintf(os.stderr, "%s: %d\n", cpath, imlib.get_error())
+    ok := image_load(img)
+    if !ok {
+        fmt.fprintf(os.stderr, "%s: %d\n", path, imlib.get_error())
         return false
     }
 
     // scale image down
-    im = img_scale_down(im, MAX_THUMB)
-    if im == nil {
-        fmt.fprintf(os.stderr, "%s: failed to scale image: %d\n", cpath, imlib.get_error())
-        return false
-    }
-    imlib.context_set_image(im)
-
-    // create texture... make maybe proc
-    w := imlib.image_get_width()
-    h := imlib.image_get_height()
-    pixels := imlib.image_get_data_for_reading_only()
-    thumbnail := sdl.CreateTexture(renderer, .ARGB8888, .STATIC, w, h)
-    ok := sdl.UpdateTexture(thumbnail, nil, rawptr(pixels), w * size_of(c.uint32_t))
-
+    ok = image_scale_down(img, MAX_THUMB)
     if !ok {
-        fmt.fprintf(os.stderr, "%s: texture error: %s\n", cpath, sdl.GetError())
+        fmt.fprintf(os.stderr, "%s: failed to scale image: %d\n", path, imlib.get_error())
         return false
     }
 
+    thumbnail, ok1 := create_texture_from_image(renderer, img)
+    if !ok1 {
+        return false
+    }
     img.thumbnail = thumbnail
 
     // do we really need to do this?
-    imlib.free_image() // free scaled image
+    // free scaled image
+    image_unload(img)
 
     g.n_loaded += 1
     return true
 }
 
-img_scale_down :: proc(im: imlib.Image, thumb: f32) -> imlib.Image {
-    imlib.context_set_image(im)
+image_scale_down :: proc(img: ^Image, thumb: f32) -> bool {
+    imlib.context_set_image(img.im)
     wi := imlib.image_get_width()
     hi := imlib.image_get_height()
     w := f32(wi)
@@ -116,39 +134,37 @@ img_scale_down :: proc(im: imlib.Image, thumb: f32) -> imlib.Image {
         imlib.context_set_anti_alias(true)
         im_scaled := imlib.create_cropped_scaled_image(0, 0, wi, hi, i32(scale*w), i32(scale*h))
         imlib.free_image_and_decache()
-        return im_scaled
+        img.im = im_scaled
+        return img.im != nil
     }
-    return im
+    return true
 }
 
-image_load_as_texture :: proc(renderer: ^sdl.Renderer, img: Image) -> (^sdl.Texture, bool) {
-    // TODO: use builder
-    cpath := strings.clone_to_cstring(img.file.fullpath)
-    defer delete(cpath)
-    im := imlib.load_image(cpath)
-    if im == nil {
-        return nil, false
-    }
-    t, ok := create_texture_from_im(renderer, im)
-    return t, ok
-}
-
-create_texture_from_im :: proc(renderer: ^sdl.Renderer, im: imlib.Image) -> (^sdl.Texture, bool) {
-    imlib.context_set_image(im)
+create_texture_from_image :: proc(renderer: ^sdl.Renderer, img: ^Image) -> (^sdl.Texture, bool) {
+    // load again
+    image_load(img)
+    imlib.context_set_image(img.im)
     w := imlib.image_get_width()
     h := imlib.image_get_height()
     pixels := imlib.image_get_data_for_reading_only()
+    // TODO: use path as given by argc
     if pixels == nil {
+        fmt.fprintf(os.stderr, "%s: can't load image: %d\n", img.file.fullpath, imlib.get_error())
         return nil, false
     }
 
     t := sdl.CreateTexture(renderer, .ARGB8888, .STATIC, w, h)
-    if t == nil {
+    updated := false
+    if t != nil {
+        updated = sdl.UpdateTexture(t, nil, rawptr(pixels), w * size_of(c.uint32_t))
+    }
+
+    if t == nil || !updated {
+        fmt.fprintf(os.stderr, "%s: can't load texture: %s\n", img.file.fullpath, sdl.GetError())
         return nil, false
     }
 
-    ok := sdl.UpdateTexture(t, nil, rawptr(pixels), w * size_of(c.uint32_t))
-    return t, ok
+    return t, true
 }
 
 sorted_inject :: proc(s: ^[dynamic]int, value: int) -> runtime.Allocator_Error {
@@ -167,13 +183,13 @@ sorted_inject :: proc(s: ^[dynamic]int, value: int) -> runtime.Allocator_Error {
     return err
 }
 
-draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, fc: ^Focus_State, img: Image) {
+draw_focus :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, fc: ^Focus_State, img: ^Image) {
     // set image... maybe make proc
     if fc.img != img {
         if fc.texture != nil {
             sdl.DestroyTexture(fc.texture)
         }
-        t, ok := image_load_as_texture(renderer, img)
+        t, ok := create_texture_from_image(renderer, img)
         fc.texture = t
         if !ok {
             return
@@ -329,7 +345,7 @@ draw_grid :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid) {
     }
 }
 
-draw_bar :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, builder: ^strings.Builder, grid: ^Grid, focus_state: ^Focus_State, focus_mode: bool, font: ^sdl_ttf.Font) {
+draw_bar :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, grid: ^Grid, focus_state: ^Focus_State, focus_mode: bool, font: ^sdl_ttf.Font) {
 
     filename := grid_selected_image(grid).file.fullpath
     cfilename := strings.unsafe_string_to_cstring(filename)
@@ -339,16 +355,17 @@ draw_bar :: proc(window: ^sdl.Window, renderer: ^sdl.Renderer, builder: ^strings
     sdl.DestroySurface(surface)
     defer sdl.DestroyTexture(text_left)
 
-    strings.builder_reset(builder)
+    b := &g_builder
+    strings.builder_reset(b)
     if focus_mode {
-        strings.write_int(builder, int(ZOOM_LEVELS[focus_state.zoom_idx]*100))
-        strings.write_string(builder, "% ")
+        strings.write_int(b, int(ZOOM_LEVELS[focus_state.zoom_idx]*100))
+        strings.write_string(b, "% ")
     }
     // abstract this
-    strings.write_int(builder, grid.selected+1)
-    strings.write_byte(builder, '/')
-    strings.write_int(builder, len(grid.images))
-    counter := strings.to_string(builder^)
+    strings.write_int(b, grid.selected+1)
+    strings.write_byte(b, '/')
+    strings.write_int(b, len(grid.images))
+    counter := strings.to_string(b^)
     ccounter := strings.unsafe_string_to_cstring(counter)
     surface = sdl_ttf.RenderText_Blended(font, ccounter, len(counter), sdl.Color{255, 255, 255, 255})
     text_right := sdl.CreateTextureFromSurface(renderer, surface)
@@ -394,7 +411,6 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     }
 
     // collect files. walk dirs
-    // TODO: store infos instead of paths?
     sdl_ok = true
     images: [dynamic]Image
     defer {
@@ -467,9 +483,8 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
     defer sdl_ttf.CloseFont(font)
 
     sdl_ok = true
-    builder: strings.Builder
-    strings.builder_init(&builder) or_return
-    defer strings.builder_destroy(&builder)
+    strings.builder_init(&g_builder) or_return
+    defer strings.builder_destroy(&g_builder)
 
     grid := Grid{
         images = images,
@@ -551,7 +566,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         }
 
         for !grid_are_all_loaded(&grid) {
-            if !grid_load_next_img(&grid, renderer, &builder) {
+            if !grid_load_next_img(&grid, renderer) {
                 ordered_remove(&grid.images, grid.n_loaded)
             }
 
@@ -572,7 +587,8 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
         sdl.GetWindowSize(window, &ww, &wh)
 
         if focus_mode {
-            draw_focus(window, renderer, &focus_state, grid_selected_image(&grid))
+            img := grid_selected_image(&grid)
+            draw_focus(window, renderer, &focus_state, img)
         } else {
             draw_grid(window, renderer, &grid)
         }
@@ -580,7 +596,7 @@ run :: proc() -> (sdl_ok: bool, err: os.Error) {
 
         // setup text
         if bar_enabled {
-            draw_bar(window, renderer, &builder, &grid, &focus_state, focus_mode, font)
+            draw_bar(window, renderer, &grid, &focus_state, focus_mode, font)
         }
 
         sdl.RenderPresent(renderer)
